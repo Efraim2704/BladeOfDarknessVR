@@ -1,0 +1,6 @@
+# Normaliza los finales de linea: LF en el repositorio, nativos al extraer.
+* text=auto
+*.bat text eol=crlf
+*.dll binary
+*.lib binary
+*.txt text eol=crlf
