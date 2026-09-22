@@ -3,3 +3,7 @@ output/
 *.pdb
 *.user
 .vs/
+build.bat
+# Codigo de los mandos de VR: caracteristica aparcada, no se sube.
+mandos/
+_to_delete/

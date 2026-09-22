@@ -60,3 +60,4 @@ add_custom_command(TARGET BladeVR POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         ${CMAKE_SOURCE_DIR}/ThirdParty/openvr/openvr_api.dll
         $<TARGET_FILE_DIR:BladeVR>/openvr_api.dll)
+

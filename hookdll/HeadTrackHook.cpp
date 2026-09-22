@@ -2,6 +2,9 @@
 #include "HookLogger.h"
 #include "OpenVRHook.h"
 #include "FromWorldLocator.h"
+#include "FovHook.h"
+#include "Dx11Hook.h"
+#include "StereoHook.h"
 #include <windows.h>
 #include <MinHook.h>
 #include <atomic>
@@ -49,7 +52,13 @@ static constexpr uintptr_t kCameraEntityOffset = 0xE8;       // ptr1+0xE8 -> ent
 static constexpr uintptr_t kCameraPositionOffset = 0x550;    // Position (3 doubles)
 static constexpr uintptr_t kCameraTPosOffset = 0x568;        // TPos (3 doubles)
 static constexpr uintptr_t kFromWorldWriterRipOffset = 0x72e55;      // dentro de la funcion que escribe fromWorld
-static constexpr uintptr_t kFromWorldFinalCallReturnOffset = 0x5a81d; // retorno de la ultima llamada por fotograma
+static constexpr uintptr_t kFromWorldFinalCallReturnOffset = 0x5a81d; // retorno de la ultima llamada por fotograma (partida)
+// Las dos primeras llamadas por fotograma en partida (estados intermedios de
+// la camara de seguimiento): no se reescribe tras ellas. Cualquier otro
+// llamante (seleccion de personaje, cinematicas) se trata como definitivo.
+static constexpr uintptr_t kFromWorldIntermediateReturn1 = 0x5a7d3;
+static constexpr uintptr_t kFromWorldIntermediateReturn2 = 0x5a7f8;
+static constexpr uintptr_t kPoseFromWorldOffset = 0x98;   // fromWorld dentro del objeto de pose (param_1 del escritor)
 static constexpr uintptr_t kGetLevelOffset = 0x7ceb0;       // FUN_14007ceb0() -> nivel
 static constexpr uintptr_t kPointSectorOffset = 0x7b020;    // FUN_14007b020(nivel, p) -> sector o 0
 static constexpr uintptr_t kRayCastOffset = 0x7ce20;        // FUN_14007ce20(nivel, desde, hasta, &impacto, 2, 1, filtro)
@@ -81,8 +90,8 @@ static std::atomic<int> g_unitsPerMeter{1000};     // escala 6DOF
 static std::atomic<int> g_mouseCountsPerDegreeX10{120};
 static std::atomic<bool> g_insWasDown{false};
 static std::atomic<bool> g_delWasDown{false};
-static std::atomic<bool> g_spaceWasDown{false};
-// Recentrado de posicion (Espacio). Se pide desde el hilo de Present y se
+static std::atomic<bool> g_homeWasDown{false};
+// Recentrado de posicion (Inicio). Se pide desde el hilo de Present y se
 // aplica en el hilo del juego, dentro del hook de fromWorld.
 static std::atomic<int> g_recenterRequested{0};
 
@@ -113,6 +122,29 @@ static bool g_fromWorldWriterHookInstalled = false;
 // contadores del log por segundo
 static std::atomic<uint64_t> g_fwCallsSec{0};
 static std::atomic<uint64_t> g_fwWritesSec{0};
+static std::atomic<double> g_lastWrittenYawDeg{0.0};   // guinada de la ultima fromWorld que escribimos
+static std::mutex g_lastWrittenMutex;
+static double g_lastWritten[16] = {};                   // ultima fromWorld que escribimos (para detectar si el juego la piso)
+static bool g_haveLastWritten = false;
+// Matriz del juego sobre la que se aplico esa ultima escritura, con que
+// modo y en que fotograma. Si el juego no vuelve a escribir fromWorld
+// (menu principal: camara estatica), la matriz sigue siendo "nuestra" pero
+// con la pose del visor de hace muchos fotogramas; hay que rehacerla desde
+// la base con la pose actual.
+static double g_lastBase[16] = {};
+static bool g_lastPositional = false;
+static unsigned long long g_lastWrittenFrame = 0;
+
+static bool IsOurLastWrittenMatrix(const double fw[16]) {
+    std::lock_guard<std::mutex> lock(g_lastWrittenMutex);
+    if (!g_haveLastWritten) return false;
+    for (int i = 0; i < 16; ++i) { if (fw[i] != g_lastWritten[i]) return false; }
+    return true;
+}
+static std::atomic<uint64_t> g_fwLateRewritesSec{0};  // reescrituras hechas en la raiz de culling
+static std::atomic<uint64_t> g_fwStaleRefreshSec{0};  // rehechas por ser de un fotograma anterior (camara estatica)
+static std::atomic<uint64_t> g_cullCallsSec{0};       // llamadas a la raiz de culling
+static std::atomic<uint64_t> g_cullOtherPoseSec{0};   // ... cuyo bloque NO es el objeto de pose global
 static std::atomic<uint64_t> g_noPose{0};
 static std::atomic<uint64_t> g_rayClampSec{0};
 static std::atomic<uint64_t> g_pushOutSec{0};
@@ -120,10 +152,9 @@ static std::atomic<uint64_t> g_mouseSentSec{0};
 static std::atomic<long long> g_mouseDxSec{0};
 static std::atomic<uint64_t> g_lastLogTick{0};
 
-// diagnostico de crashes: fase (0 = codigo del juego) y VEH
+// Fase del mod en la que esta el hilo del juego (0 = dentro del codigo del
+// juego). Solo se usa para el log periodico.
 static std::atomic<int> g_gamePhase{0};
-static std::atomic<uint64_t> g_crashLogged{0};
-static void* g_crashVehHandle = nullptr;
 
 static uintptr_t ModuleBase() {
     static uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
@@ -148,45 +179,6 @@ static std::string DescribeAddress(uintptr_t addr) {
         o << "0x" << std::hex << addr << std::dec;
     }
     return o.str();
-}
-
-static LONG WINAPI CrashDiagVectoredHandler(EXCEPTION_POINTERS* info) {
-    if (!info || !info->ExceptionRecord || !info->ContextRecord) return EXCEPTION_CONTINUE_SEARCH;
-    DWORD code = info->ExceptionRecord->ExceptionCode;
-    if (code != 0xC0000005 && code != 0xC0000094 && code != 0xC00000FD && code != 0xC000001D &&
-        code != 0xC0000409 && code != 0xC0000374) {
-        return EXCEPTION_CONTINUE_SEARCH;
-    }
-    if (g_crashLogged.fetch_add(1, std::memory_order_relaxed) < 5) {
-        uintptr_t rip = reinterpret_cast<uintptr_t>(info->ExceptionRecord->ExceptionAddress);
-        std::ostringstream o;
-        o << "[CRASH] excepcion 0x" << std::hex << code << std::dec << " rip=" << DescribeAddress(rip)
-          << " tid=" << GetCurrentThreadId() << " fase=" << g_gamePhase.load(std::memory_order_relaxed);
-        if (code == 0xC0000005 && info->ExceptionRecord->NumberParameters >= 2) {
-            unsigned long long kind = info->ExceptionRecord->ExceptionInformation[0];
-            o << " tipo=" << (kind == 0 ? "lectura" : (kind == 1 ? "escritura" : "ejecucion"))
-              << " dir=0x" << std::hex << info->ExceptionRecord->ExceptionInformation[1] << std::dec;
-        }
-        // pila de retornos (los primeros 8 qwords legibles de la pila)
-        o << " pila=[";
-        const uintptr_t* sp = reinterpret_cast<const uintptr_t*>(info->ContextRecord->Rsp);
-        int shown = 0;
-        for (int i = 0; i < 64 && shown < 8; ++i) {
-            uintptr_t v = 0;
-            if (IsBadReadPtr(sp + i, sizeof(uintptr_t))) break;
-            v = sp[i];
-            HMODULE h = nullptr;
-            if (v > 0x10000 && GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                                                  reinterpret_cast<LPCSTR>(v), &h) && h) {
-                if (shown) o << " ";
-                o << DescribeAddress(v);
-                ++shown;
-            }
-        }
-        o << "]";
-        HookLogger::Instance().Line(o.str());
-    }
-    return EXCEPTION_CONTINUE_SEARCH;
 }
 
 // --- lecturas/escrituras seguras (solo POD + __try, regla C2712) ---------
@@ -385,12 +377,25 @@ static bool SafeReadCullBlock(long long param_2, double outRot[12], double outPo
     }
 }
 
-static bool SafeWriteCullBlock(long long param_2, const double rot[12], const double pos[5]) {
+static double g_savedCullPos[6] = {};      // posicion (+0x68) y angulos (+0x80..) del juego, solo hilo del juego
+static bool g_savedCullPosValid = false;
+
+static bool SafeWritePos6(long long param_2, const double pos[6]) {
+    __try {
+        double* dPos = reinterpret_cast<double*>(param_2 + 0x68);
+        for (int i = 0; i < 6; ++i) dPos[i] = pos[i];
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+static bool SafeWriteCullBlock(long long param_2, const double rot[12], const double pos[6]) {
     __try {
         double* dRot = reinterpret_cast<double*>(param_2 + 0x98);
         double* dPos = reinterpret_cast<double*>(param_2 + 0x68);
         for (int i = 0; i < 12; ++i) dRot[i] = rot[i];
-        for (int i = 0; i < 5; ++i) dPos[i] = pos[i];
+        for (int i = 0; i < 6; ++i) dPos[i] = pos[i];
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
@@ -437,6 +442,20 @@ static void ResetReferences() {
     g_followYawError = 0.0;
     g_followAccX = 0.0;
 }
+bool HeadTrackGetCenterYawRad(double* outYaw) {
+    if (!outYaw) return false;
+    if (g_mode.load(std::memory_order_relaxed) != 1) return false;
+    if (g_walkFollowsView.load(std::memory_order_relaxed) == 1) return false;
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    if (!g_haveYawRef) return false;
+    *outYaw = g_yawRef;
+    return true;
+}
+
+void HeadTrackResetReferences() {
+    ResetReferences();
+    HookLogger::Instance().Line("[HEAD_TRACK] Nueva escena: referencias del visor recentradas.");
+}
 
 static void CheckKeys() {
     bool ins = (GetAsyncKeyState(VK_INSERT) & 0x8000) != 0;
@@ -450,11 +469,11 @@ static void CheckKeys() {
         g_insWasDown.store(false, std::memory_order_relaxed);
     }
 
-    bool space = (GetAsyncKeyState(VK_SPACE) & 0x8000) != 0;
-    if (space && !g_spaceWasDown.exchange(space, std::memory_order_relaxed)) {
+    bool home = (GetAsyncKeyState(VK_HOME) & 0x8000) != 0;
+    if (home && !g_homeWasDown.exchange(home, std::memory_order_relaxed)) {
         g_recenterRequested.store(1, std::memory_order_relaxed);
-    } else if (!space) {
-        g_spaceWasDown.store(false, std::memory_order_relaxed);
+    } else if (!home) {
+        g_homeWasDown.store(false, std::memory_order_relaxed);
     }
 
     bool del = (GetAsyncKeyState(VK_DELETE) & 0x8000) != 0;
@@ -475,6 +494,15 @@ static void CheckKeys() {
 
 }
 
+// Guinada de la fromWorld global en este instante (para ver si el juego la
+// ha vuelto a escribir despues de nuestra reescritura).
+static double CurrentFromWorldYawDeg() {
+    double* fromWorld = TryGetOrResolveFromWorldPointer();
+    double fw[16];
+    if (!fromWorld || !SafeReadMatrix16(fromWorld, fw)) return 0.0;
+    return std::atan2(fw[2], fw[10]) * 180.0 / kPi;
+}
+
 static void MaybeLogRate() {
     uint64_t now = GetTickCount64();
     uint64_t last = g_lastLogTick.load(std::memory_order_relaxed);
@@ -491,7 +519,13 @@ static void MaybeLogRate() {
       << " unidades/m=" << g_unitsPerMeter.load(std::memory_order_relaxed)
       << " | fromWorld llamadas=" << g_fwCallsSec.exchange(0, std::memory_order_relaxed)
       << " reescrita=" << g_fwWritesSec.exchange(0, std::memory_order_relaxed)
+      << " tardias=" << g_fwLateRewritesSec.exchange(0, std::memory_order_relaxed)
+      << " rehechas=" << g_fwStaleRefreshSec.exchange(0, std::memory_order_relaxed)
       << " sinPose=" << g_noPose.exchange(0, std::memory_order_relaxed)
+      << " | fwEscrita guinada=" << g_lastWrittenYawDeg.load(std::memory_order_relaxed)
+      << " fwAhora guinada=" << CurrentFromWorldYawDeg()
+      << " | culling llamadas=" << g_cullCallsSec.exchange(0, std::memory_order_relaxed)
+      << " otraPose=" << g_cullOtherPoseSec.exchange(0, std::memory_order_relaxed)
       << " | colision recortes=" << g_rayClampSec.exchange(0, std::memory_order_relaxed)
       << " empujes=" << g_pushOutSec.exchange(0, std::memory_order_relaxed)
       << " | raton enviados=" << g_mouseSentSec.exchange(0, std::memory_order_relaxed)
@@ -522,27 +556,22 @@ void HeadTrackOnPresent() {
     MaybeLogRate();
 }
 
-// --- el hook: reescritura de fromWorld -----------------------------------
-static unsigned long long __fastcall HookedFromWorldWriter(unsigned long long a0, unsigned long long a1, unsigned long long a2, unsigned long long a3) {
-    void* ret = _ReturnAddress();
-    unsigned long long result = g_originalFromWorldWriter(a0, a1, a2, a3);
-    g_gamePhase.store(20, std::memory_order_relaxed);
-    struct PhaseReset { ~PhaseReset() { g_gamePhase.store(0, std::memory_order_relaxed); } } phaseReset;
-    g_fwCallsSec.fetch_add(1, std::memory_order_relaxed);
-
-    if (g_mode.load(std::memory_order_relaxed) != 1) return result;
-    if (reinterpret_cast<uintptr_t>(ret) != ModuleBase() + kFromWorldFinalCallReturnOffset) return result;
-
-    double* fromWorld = TryGetOrResolveFromWorldPointer();
-    if (!fromWorld) return result;
+// Reescribe fromWorld (la matriz de la camara del juego, recien escrita por el
+// juego) con la orientacion y posicion del visor. Se llama desde el hilo del
+// juego: tras el escritor de fromWorld y, si el juego la ha vuelto a pisar
+// despues (camaras fijas de la seleccion de personaje y cinematicas), justo
+// antes del culling. positional=false: solo orientacion, sin desplazamiento
+// ni colision (camaras guiadas por el juego: la colision contra un recorrido
+// que atraviesa geometria produce temblores).
+static void ApplyHeadTrackingToFromWorld(double* fromWorld, bool positional) {
     double game[16];
-    if (!SafeReadMatrix16(fromWorld, game)) return result;
-    if (std::abs(game[15] - 1.0) > 1e-6) return result;
+    if (!SafeReadMatrix16(fromWorld, game)) return;
+    if (std::abs(game[15] - 1.0) > 1e-6) return;
 
     float m[12];
     if (!GetHmdPoseMatrix34(m)) {
         g_noPose.fetch_add(1, std::memory_order_relaxed);
-        return result;
+        return;
     }
     {
         std::lock_guard<std::mutex> lock(g_renderPoseMutex);
@@ -557,7 +586,7 @@ static unsigned long long __fastcall HookedFromWorldWriter(unsigned long long a0
     }
     double baseYaw = std::atan2(game[2], game[10]);
 
-    // Espacio = recentrar la POSICION: la referencia del visor pasa a ser la
+    // Inicio = recentrar la POSICION: la referencia del visor pasa a ser la
     // actual, de modo que la camara vuelve exactamente a los ojos del
     // personaje aunque el cuerpo se haya movido desde que se cargo la
     // partida. (Se probo calibrar la escala/IPD con la altura del visor y se
@@ -569,7 +598,7 @@ static unsigned long long __fastcall HookedFromWorldWriter(unsigned long long a0
             g_havePosRef = false;
             g_haveAppliedOff = false;
         }
-        HookLogger::Instance().Line("[HEAD_TRACK] Espacio: posicion recentrada (la camara vuelve a los ojos del personaje).");
+        HookLogger::Instance().Line("[HEAD_TRACK] Inicio: posicion recentrada (la camara vuelve a los ojos del personaje).");
     }
 
     // Ejes del visor en ejes del juego (cambio de base (x, -y, -z)).
@@ -606,15 +635,18 @@ static unsigned long long __fastcall HookedFromWorldWriter(unsigned long long a0
 
         double off[3] = { hp[0] - g_posRef[0], hp[1] - g_posRef[1], hp[2] - g_posRef[2] };
         RotateY(off, cD, sD);
-        double upm = static_cast<double>(g_unitsPerMeter.load(std::memory_order_relaxed));
-        double offU[3] = { off[0] * upm, off[1] * upm, off[2] * upm };
-        ClampOffsetToLevel(c, offU);
-        double cNew[3] = { c[0] + offU[0], c[1] + offU[1], c[2] + offU[2] };
-        PushOutFromObstacles(cNew);
-        {
+        double cNew[3] = { c[0], c[1], c[2] };
+        if (positional) {
+            double upm = static_cast<double>(g_unitsPerMeter.load(std::memory_order_relaxed));
+            double offU[3] = { off[0] * upm, off[1] * upm, off[2] * upm };
+            ClampOffsetToLevel(c, offU);
+            cNew[0] = c[0] + offU[0]; cNew[1] = c[1] + offU[1]; cNew[2] = c[2] + offU[2];
+            PushOutFromObstacles(cNew);
             double fin[3] = { cNew[0] - c[0], cNew[1] - c[1], cNew[2] - c[2] };
             RateLimitOffset(fin);
             cNew[0] = c[0] + fin[0]; cNew[1] = c[1] + fin[1]; cNew[2] = c[2] + fin[2];
+        } else {
+            off[0] = 0.0; off[1] = 0.0; off[2] = 0.0;
         }
 
         for (int i = 0; i < 16; ++i) out[i] = game[i];
@@ -631,7 +663,65 @@ static unsigned long long __fastcall HookedFromWorldWriter(unsigned long long a0
         g_lastOffsetM[0] = off[0]; g_lastOffsetM[1] = off[1]; g_lastOffsetM[2] = off[2];
         g_lastCam[0] = c[0]; g_lastCam[1] = c[1]; g_lastCam[2] = c[2];
     }
-    if (SafeWriteMatrix16(fromWorld, out)) g_fwWritesSec.fetch_add(1, std::memory_order_relaxed);
+    if (SafeWriteMatrix16(fromWorld, out)) {
+        g_fwWritesSec.fetch_add(1, std::memory_order_relaxed);
+        g_lastWrittenYawDeg.store(std::atan2(out[2], out[10]) * 180.0 / kPi, std::memory_order_relaxed);
+        std::lock_guard<std::mutex> lock(g_lastWrittenMutex);
+        for (int i = 0; i < 16; ++i) { g_lastWritten[i] = out[i]; g_lastBase[i] = game[i]; }
+        g_haveLastWritten = true;
+        g_lastPositional = positional;
+        g_lastWrittenFrame = GetPresentCallCount();
+    }
+}
+
+// Si fromWorld sigue siendo la que escribimos en un fotograma anterior (el
+// juego no la ha tocado), la vuelve a construir desde la matriz base del
+// juego con la pose actual del visor. Devuelve true si lo ha hecho.
+static bool RefreshStaleFromWorld(double* fromWorld) {
+    double base[16];
+    bool positional;
+    {
+        std::lock_guard<std::mutex> lock(g_lastWrittenMutex);
+        if (!g_haveLastWritten || g_lastWrittenFrame == GetPresentCallCount()) return false;
+        for (int i = 0; i < 16; ++i) base[i] = g_lastBase[i];
+        positional = g_lastPositional;
+    }
+    if (!SafeWriteMatrix16(fromWorld, base)) return false;
+    ApplyHeadTrackingToFromWorld(fromWorld, positional);
+    return true;
+}
+
+
+// --- el hook: reescritura de fromWorld -----------------------------------
+static unsigned long long __fastcall HookedFromWorldWriter(unsigned long long a0, unsigned long long a1, unsigned long long a2, unsigned long long a3) {
+    void* ret = _ReturnAddress();
+    unsigned long long result = g_originalFromWorldWriter(a0, a1, a2, a3);
+    g_gamePhase.store(20, std::memory_order_relaxed);
+    struct PhaseReset { ~PhaseReset() { g_gamePhase.store(0, std::memory_order_relaxed); } } phaseReset;
+    g_fwCallsSec.fetch_add(1, std::memory_order_relaxed);
+
+    FovClampOnGameThread();              // FOV minimo (hilo del juego)
+
+    // Solo interesa la escritura de la matriz de la CAMARA (a0 es el objeto de
+    // pose cuyo fromWorld esta en a0+0x98) y solo la definitiva del fotograma:
+    // en partida, la tercera llamada (retorno +0x5a81d); en la seleccion de
+    // personaje y las cinematicas los llamantes son otros y cada llamada es
+    // definitiva.
+    double* fromWorld = TryGetOrResolveFromWorldPointer();
+    if (!fromWorld) return result;
+    uintptr_t retOff = reinterpret_cast<uintptr_t>(ret) - ModuleBase();
+    bool isCameraPose = (a0 + kPoseFromWorldOffset == reinterpret_cast<uintptr_t>(fromWorld));
+    bool isIntermediate = (retOff == kFromWorldIntermediateReturn1 || retOff == kFromWorldIntermediateReturn2);
+    if (!isCameraPose || isIntermediate) return result;
+    StereoNotifyCameraPose();
+
+    if (g_mode.load(std::memory_order_relaxed) != 1) return result;
+    // Desplazamiento posicional y colision solo con la camara de partida (su
+    // llamada definitiva retorna a +0x5a81d). Las cinematicas llaman al
+    // escritor desde otros sitios, tres veces por fotograma y con un
+    // recorrido que atraviesa geometria: ahi solo orientacion.
+    bool positional = (retOff == kFromWorldFinalCallReturnOffset);
+    ApplyHeadTrackingToFromWorld(fromWorld, positional);
     return result;
 }
 
@@ -672,9 +762,6 @@ static bool InstallFromWorldWriterHook() {
 }
 
 bool InstallHeadTrackHooks() {
-    if (!g_crashVehHandle) {
-        g_crashVehHandle = AddVectoredExceptionHandler(1, &CrashDiagVectoredHandler);
-    }
     return InstallFromWorldWriterHook();
 }
 
@@ -682,10 +769,6 @@ void UninstallHeadTrackHooks() {
     if (g_fromWorldWriterHookInstalled && g_fromWorldWriterStart) {
         MH_DisableHook(reinterpret_cast<void*>(g_fromWorldWriterStart));
         g_fromWorldWriterHookInstalled = false;
-    }
-    if (g_crashVehHandle) {
-        RemoveVectoredExceptionHandler(g_crashVehHandle);
-        g_crashVehHandle = nullptr;
     }
 }
 
@@ -696,20 +779,59 @@ void HeadTrackSyncCullingCamera(long long param_2) {
     struct PhaseReset { ~PhaseReset() { g_gamePhase.store(0, std::memory_order_relaxed); } } phaseReset;
     double* fromWorld = TryGetOrResolveFromWorldPointer();
     if (!fromWorld) return;
+    g_cullCallsSec.fetch_add(1, std::memory_order_relaxed);
+    if (static_cast<uintptr_t>(param_2) + kPoseFromWorldOffset != reinterpret_cast<uintptr_t>(fromWorld)) {
+        g_cullOtherPoseSec.fetch_add(1, std::memory_order_relaxed);
+    }
     double fw[16];
     if (!SafeReadMatrix16(fromWorld, fw)) return;
+    // Camaras fijas (seleccion de personaje, cinematicas): el juego vuelve a
+    // escribir fromWorld despues del escritor enganchado (p. ej. +0x58d34),
+    // asi que aqui, justo antes del culling, se aplica el seguimiento sobre
+    // esa matriz definitiva. En partida la matriz ya es la nuestra y no se
+    // toca (evita aplicar el giro dos veces).
+    if (!IsOurLastWrittenMatrix(fw)) {
+        g_fwLateRewritesSec.fetch_add(1, std::memory_order_relaxed);
+        StereoNotifyCameraPose();   // el juego ha tocado la camara: logica viva
+        ApplyHeadTrackingToFromWorld(fromWorld, false);
+        if (!SafeReadMatrix16(fromWorld, fw)) return;
+    } else if (RefreshStaleFromWorld(fromWorld)) {
+        // Camara estatica (menu principal): la matriz era nuestra pero de un
+        // fotograma anterior; ya esta rehecha con la pose actual.
+        g_fwStaleRefreshSec.fetch_add(1, std::memory_order_relaxed);
+        if (!SafeReadMatrix16(fromWorld, fw)) return;
+    }
     double rot[12], pos[6];
     if (!SafeReadCullBlock(param_2, rot, pos)) return;
-    double newPos[5];
+    // Se guardan posicion y angulos del juego para devolverselos tras el
+    // culling: los controladores de las cinematicas los leen para seguir su
+    // recorrido (con nuestros angulos el giro final hacia el personaje se
+    // quedaba a medias).
+    for (int i = 0; i < 6; ++i) g_savedCullPos[i] = pos[i];
+    g_savedCullPosValid = true;
+    // El objeto de pose guarda posicion (+0x68) y los tres angulos con los
+    // que el juego construye fromWorld = T(-c) * Ry(guinada) * Rx(-cabeceo)
+    // * Rz(-alabeo) (vectores fila): +0x80 guinada, +0x88 cabeceo, +0x90
+    // alabeo. Se extraen los tres de la matriz reescrita (el alabeo del visor
+    // no es cero) para que todo lo que el juego derive de los angulos sea
+    // coherente con la matriz.
+    double newPos[6];
     for (int rr = 0; rr < 3; ++rr) {
         newPos[rr] = -(fw[12] * fw[rr * 4 + 0] + fw[13] * fw[rr * 4 + 1] + fw[14] * fw[rr * 4 + 2]);
     }
-    newPos[3] = std::atan2(fw[8], fw[10]);
-    double s = fw[6];
+    newPos[3] = std::atan2(-fw[2], fw[10]);        // guinada: R[0][2] = -sin(a)cos(b), R[2][2] = cos(a)cos(b)
+    double s = fw[6];                              // R[1][2] = -sin(b)
     if (s > 1.0) s = 1.0;
     if (s < -1.0) s = -1.0;
-    newPos[4] = -std::asin(s);
+    newPos[4] = -std::asin(s);                     // cabeceo
+    newPos[5] = std::atan2(fw[4], fw[5]);          // alabeo: R[1][0] = sin(g)cos(b), R[1][1] = cos(g)cos(b)
     SafeWriteCullBlock(param_2, fw, newPos);
+}
+
+void HeadTrackRestoreCullingCamera(long long param_2) {
+    if (!g_savedCullPosValid) return;
+    g_savedCullPosValid = false;
+    SafeWritePos6(param_2, g_savedCullPos);
 }
 
 } // namespace BladeVR

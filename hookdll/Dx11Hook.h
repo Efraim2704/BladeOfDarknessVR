@@ -28,4 +28,7 @@ ID3D11DeviceContext* GetGameDeviceContext();
 // Numero de Present observados (se usa como identificador de fotograma).
 unsigned long long GetPresentCallCount();
 
+// Ventana del juego (de la swap chain). nullptr si aun no se conoce.
+void* GetGameWindow();
+
 } // namespace BladeVR

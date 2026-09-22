@@ -27,6 +27,10 @@ static PFN_VR_GetVRInitErrorAsEnglishDescription g_VR_GetVRInitErrorAsEnglishDes
 
 static vr::IVRSystem* g_vrSystem = nullptr;
 static vr::IVRCompositor* g_vrCompositor = nullptr;
+static vr::IVROverlay* g_vrOverlay = nullptr;
+static vr::VROverlayHandle_t g_flatOverlay = vr::k_ulOverlayHandleInvalid;
+static ID3D11Texture2D* g_blackTexture = nullptr;   // escena negra bajo la pantalla plana
+static bool g_flatScreenVisible = false;
 static std::atomic<bool> g_available{false};
 
 static std::atomic<uint64_t> g_submitCount{0};
@@ -153,8 +157,21 @@ bool InstallOpenVRHook() {
     return true;
 }
 
+void StopOpenVRUse() {
+    g_available = false;
+    std::lock_guard<std::mutex> lock(g_compositorMutex);
+    g_vrCompositor = nullptr;
+    g_vrSystem = nullptr;
+    g_vrOverlay = nullptr;
+}
+
 void UninstallOpenVRHook() {
     g_available = false;
+    HideFlatScreen();
+    if (g_vrOverlay && g_flatOverlay != vr::k_ulOverlayHandleInvalid) g_vrOverlay->DestroyOverlay(g_flatOverlay);
+    g_flatOverlay = vr::k_ulOverlayHandleInvalid;
+    g_vrOverlay = nullptr;
+    if (g_blackTexture) { g_blackTexture->Release(); g_blackTexture = nullptr; }
     if (g_VR_ShutdownInternal && g_vrSystem) g_VR_ShutdownInternal();
     g_vrSystem = nullptr;
     g_vrCompositor = nullptr;
@@ -264,6 +281,123 @@ void PumpOpenVRFrameTiming() {
         }
     }
     g_pumpCount.fetch_add(1, std::memory_order_relaxed);
+}
+
+// --- pantalla plana (overlay) ----------------------------------------------
+static bool EnsureFlatOverlay() {
+    if (g_flatOverlay != vr::k_ulOverlayHandleInvalid) return true;
+    if (!g_VR_GetGenericInterface) return false;
+    vr::EVRInitError ifaceError = vr::VRInitError_None;
+    g_vrOverlay = static_cast<vr::IVROverlay*>(g_VR_GetGenericInterface(vr::IVROverlay_Version, &ifaceError));
+    if (!g_vrOverlay || ifaceError != vr::VRInitError_None) {
+        HookLogger::Instance().Line("[OPENVR] ERROR: no se pudo obtener IVROverlay.");
+        g_vrOverlay = nullptr;
+        return false;
+    }
+    vr::EVROverlayError err = g_vrOverlay->CreateOverlay("bladevr.flatscreen", "BladeVR flat screen", &g_flatOverlay);
+    if (err != vr::VROverlayError_None) {
+        std::ostringstream o;
+        o << "[OPENVR] ERROR: CreateOverlay fallo (" << static_cast<int>(err) << ").";
+        HookLogger::Instance().Line(o.str());
+        g_flatOverlay = vr::k_ulOverlayHandleInvalid;
+        return false;
+    }
+    g_vrOverlay->SetOverlayAlpha(g_flatOverlay, 1.0f);
+    vr::VRTextureBounds_t bounds{0.0f, 0.0f, 1.0f, 1.0f};
+    g_vrOverlay->SetOverlayTextureBounds(g_flatOverlay, &bounds);
+    return true;
+}
+
+static bool EnsureBlackTexture(ID3D11Texture2D* like) {
+    if (g_blackTexture) return true;
+    ID3D11Device* device = nullptr;
+    like->GetDevice(&device);
+    if (!device) return false;
+    D3D11_TEXTURE2D_DESC desc{};
+    desc.Width = 64;
+    desc.Height = 64;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    static const unsigned char zeros[64 * 64 * 4] = {};
+    D3D11_SUBRESOURCE_DATA init{};
+    init.pSysMem = zeros;
+    init.SysMemPitch = 64 * 4;
+    HRESULT hr = device->CreateTexture2D(&desc, &init, &g_blackTexture);
+    device->Release();
+    if (FAILED(hr)) { g_blackTexture = nullptr; return false; }
+    return true;
+}
+
+bool ShowAnchoredOverlay(ID3D11Texture2D* frameTex, const float* screenPose12, float widthM, bool leftHalfOnly) {
+    if (!g_available.load(std::memory_order_relaxed) || !g_vrCompositor || !frameTex || !screenPose12) return false;
+    if (!EnsureFlatOverlay()) return false;
+
+    vr::HmdMatrix34_t xform{};
+    for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 4; ++c) xform.m[r][c] = screenPose12[r * 4 + c];
+    }
+    g_vrOverlay->SetOverlayWidthInMeters(g_flatOverlay, widthM);
+    vr::VRTextureBounds_t bounds{0.0f, 0.0f, leftHalfOnly ? 0.5f : 1.0f, 1.0f};
+    g_vrOverlay->SetOverlayTextureBounds(g_flatOverlay, &bounds);
+    g_vrOverlay->SetOverlayTransformAbsolute(g_flatOverlay, g_vrCompositor->GetTrackingSpace(), &xform);
+    vr::Texture_t texture{};
+    texture.handle = frameTex;
+    texture.eType = vr::TextureType_DirectX;
+    texture.eColorSpace = vr::ColorSpace_Auto;
+    g_vrOverlay->SetOverlayTexture(g_flatOverlay, &texture);
+    if (!g_flatScreenVisible) {
+        // Transformacion y textura ya estan puestas en esta misma llamada, asi
+        // que se puede mostrar ya (sin esperar un fotograma, que dejaba un
+        // parpadeo negro al entrar en el menu).
+        g_vrOverlay->ShowOverlay(g_flatOverlay);
+        g_flatScreenVisible = true;
+    }
+    return true;
+}
+
+bool ShowFlatScreen(ID3D11Texture2D* frameTex, const float* screenPose12, float widthM, bool leftHalfOnly) {
+    if (!ShowAnchoredOverlay(frameTex, screenPose12, widthM, leftHalfOnly)) return false;
+    return SubmitBlackScene(frameTex);
+}
+
+bool SubmitBlackScene(ID3D11Texture2D* like) {
+    if (!g_available.load(std::memory_order_relaxed) || !g_vrCompositor || !like) return false;
+    if (!EnsureBlackTexture(like)) return false;
+
+    // Escena negra debajo (sin ella el compositor mostraria su entorno).
+    vr::Texture_t black{};
+    black.handle = g_blackTexture;
+    black.eType = vr::TextureType_DirectX;
+    black.eColorSpace = vr::ColorSpace_Auto;
+    vr::VRTextureBounds_t full{0.0f, 0.0f, 1.0f, 1.0f};
+    std::lock_guard<std::mutex> lock(g_compositorMutex);
+    g_vrCompositor->Submit(vr::Eye_Left, &black, &full, vr::Submit_Default);
+    g_vrCompositor->Submit(vr::Eye_Right, &black, &full, vr::Submit_Default);
+    g_submitCount.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+void HideFlatScreen() {
+    if (!g_flatScreenVisible) return;
+    g_flatScreenVisible = false;
+    if (g_vrOverlay && g_flatOverlay != vr::k_ulOverlayHandleInvalid) g_vrOverlay->HideOverlay(g_flatOverlay);
+    HookLogger::Instance().Line("[OPENVR] Pantalla plana ocultada.");
+}
+
+void* GetOpenVRInterface(const char* interfaceVersion) {
+    if (!g_available.load(std::memory_order_relaxed) || !g_VR_GetGenericInterface || !interfaceVersion) return nullptr;
+    vr::EVRInitError err = vr::VRInitError_None;
+    void* iface = g_VR_GetGenericInterface(interfaceVersion, &err);
+    return (err == vr::VRInitError_None) ? iface : nullptr;
+}
+
+void OpenVRShowDashboard() {
+    if (!EnsureFlatOverlay() || !g_vrOverlay) return;
+    g_vrOverlay->ShowDashboard("");
 }
 
 void LogOpenVRSummary() {

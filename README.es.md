@@ -54,20 +54,32 @@ el juego funciona con normalidad, sin VR. Para desinstalar, borrar los tres fich
 
 * **Resolución: la máxima que permita tu gráfica** (p. ej. 2560x1440). Cada ojo recibe la
   mitad del ancho de pantalla, así que a más resolución, más nitidez en el visor.
-* **Campo de visión (FOV): 145**. El motor recorta la geometría en la CPU al FOV del juego;
-  con un FOV bajo quedan zonas negras en los bordes del visor.
+* **Suavizado de bordes: desactivado**. Este no es opcional: con él activado se pierde la
+  imagen en estéreo.
+* **Desenfoque de movimiento: desactivado**. Emborrona la imagen dentro del visor.
+* **Florecimiento: desactivado** (viene así de fábrica, y solo se habilita con el HDR
+  activado). El resplandor se calcula sobre el fotograma completo, que lleva los dos ojos uno
+  al lado del otro, así que el halo de una antorcha se derrama de la imagen de un ojo a la
+  del otro.
+* **Oclusión ambiental: mejor desactivada**. También se calcula en espacio de pantalla, así
+  que sale mal calculada en la unión de los dos ojos, y consume tiempo de fotograma que en VR
+  hace falta.
+* **HDR: a tu gusto.** Solo cambia la precisión con la que se calcula la iluminación, no cómo
+  se compone la imagen, así que no molesta de ninguna de las dos maneras.
 * **Activa el límite de FPS** en las opciones del juego. Sin él, la cámara se mueve a
   tirones en lugar de con fluidez.
+* **Campo de visión (FOV): no lo toques.** Mientras el mod está en marcha fuerza un mínimo de
+  145 grados, diga lo que diga el menú, para que no aparezcan márgenes negros en los bordes
+  de la vista.
 
 ## Teclas
 
 | Tecla | Función |
 |---|---|
-| **F5** | Activa / desactiva el estéreo (se activa solo al aparecer el menú). |
 | **Re Pág / Av Pág** | Separación entre ojos +4 / −4 unidades del juego (por defecto 54). Ajústala hasta que el mundo tenga el tamaño correcto. |
 | **Fin** | Tamaño de la pantalla virtual de menús y HUD (53° / 75° / 90°). |
 | **Insert** | Seguimiento de cabeza activo (por defecto) / apagado. Al activarlo se recentra la vista. |
-| **Espacio** | Recentra la posición: la cámara vuelve a los ojos del personaje. |
+| **Inicio** | Recentra la posición: la cámara vuelve a los ojos del personaje. |
 | **Supr** | Alterna entre *vista libre* (el personaje no gira con la cabeza) y *camino hacia donde miro* (el personaje gira siguiendo al visor). |
 
 ## Cómo funciona
@@ -123,7 +135,8 @@ Después, copiar los tres ficheros de `output\Release\` (`dxgi.dll`, `BladeVR.dl
 
 El mod no escribe ningún fichero por defecto. Para obtener un log, crea un fichero vacío
 llamado `BladeVR_debug.txt` junto a `Blade.exe`; el mod escribirá entonces
-`bin\bin\BladeVR_logs\BladeVR_<pid>_<fecha>.log` en cada ejecución.
+`bin\bin\BladeVR_logs\BladeVR_<pid>_<fecha>.log` en cada ejecución: los módulos que instala,
+el enlace con SteamVR, los frustums de cada ojo y un resumen cada pocos segundos.
 
 ## Estructura
 
@@ -133,6 +146,7 @@ hookdll/                 BladeVR.dll
   Dx11Hook.*             Present/ResizeBuffers/CreateSwapChain, entrega a SteamVR
   ProjectionHook.*       captura de la matriz de proyección (VS slot 0)
   StereoHook.*           estéreo por viewport partido y teclas de estéreo
+  FovHook.*              campo de visión mínimo (selección de personaje, cinemáticas)
   OpenVRHook.*           SteamVR: init, poses, frustums, Submit
   HeadTrackHook.*        seguimiento de cabeza 6DOF y colisión
   SceneCullingRootHook.* culling coherente con la vista reescrita
@@ -144,15 +158,21 @@ ThirdParty/openvr/       openvr.h, openvr_api.lib, openvr_api.dll (OpenVR SDK)
 
 ## Limitaciones conocidas
 
-* La selección de personaje y la cinemática inicial de cada personaje se ven en una pantalla
-  rectangular con márgenes negros (efecto de "caja"), y algunos objetos se salen hacia la
-  zona negra.
-* El vídeo de introducción y la primera pantalla de carga se ven con separación incorrecta
-  (el estéreo se activa al aparecer el menú).
+* El resplandor de las antorchas y demás luces no se atenúa hacia los bordes de la vista como
+  sí hace en plano. El juego lo atenúa respecto a su propio encuadre, que en VR es mucho más
+  ancho de lo que ve cada ojo, así que una antorcha mirada de reojo conserva el halo completo
+  en lugar de reducirse.
+* El recuadro con los datos del personaje, en la pantalla de selección, parece desplazarse
+  ligeramente al girar la cabeza.
 * En los bordes de algunos portales pueden verse finas franjas negras: el motor recorta la
   geometría de cada sector contra el portal desde la cámara central, no desde cada ojo.
 * Las armas y el escudo atraviesan paredes y objetos como en el juego original, y en tercera
   persona la cámara puede meterse en el personaje.
+* El espejo del monitor no muestra las pantallas ancladas delante de ti (la lista de combos
+  de F1 y la ficha de personaje): esas van directas al overlay de SteamVR y no pasan por la
+  imagen del juego.
+* No hay soporte de mandos de movimiento de VR: se juega con teclado y ratón o con un mando,
+  igual que en plano.
 
 ## Licencia
 

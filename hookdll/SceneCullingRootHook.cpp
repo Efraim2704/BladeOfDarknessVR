@@ -1,5 +1,7 @@
 #include "SceneCullingRootHook.h"
 #include "HeadTrackHook.h"
+#include "FovHook.h"
+#include "StereoHook.h"
 #include "HookLogger.h"
 #include <windows.h>
 #include <MinHook.h>
@@ -14,8 +16,11 @@ static PFN_SceneCullingRoot g_originalSceneCullingRoot = nullptr;
 static bool g_installed = false;
 
 static void __fastcall HookedSceneCullingRoot(long long param_1, long long param_2, long long param_3) {
+    FovClampOnGameThread();
+    StereoNotifyCullingPass();
     HeadTrackSyncCullingCamera(param_2);
     g_originalSceneCullingRoot(param_1, param_2, param_3);
+    HeadTrackRestoreCullingCamera(param_2);
 }
 
 bool InstallSceneCullingRootHook() {

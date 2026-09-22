@@ -53,20 +53,29 @@ the game runs normally without VR. To uninstall, delete the three files.
 
 * **Resolution: the maximum your GPU allows** (e.g. 2560x1440). Each eye gets half of the
   screen width, so the higher the resolution, the sharper the image in the headset.
-* **Field of view: 145**. The engine culls geometry on the CPU to the game's FOV; a low FOV
-  leaves black areas at the edges of the headset's view.
+* **Edge smoothing (anti-aliasing): off**. This one is not optional: with it enabled the
+  stereo image is lost.
+* **Motion blur: off**. It smears the image in the headset.
+* **Bloom: off** (it is off by default, and only becomes available with HDR on). The glow is
+  computed over the whole frame, which holds both eyes side by side, so the halo of a torch
+  bleeds from one eye's image into the other's.
+* **Ambient occlusion: off** is recommended. It is also computed in screen space, so it is
+  miscalculated where the two eyes meet, and it costs frame time that VR needs.
+* **HDR: as you like.** It only changes the precision of the lighting, not how the image is
+  composed, so it is safe either way.
 * **Enable the frame-rate limit** in the game options. Without it the camera moves in
   jerks instead of smoothly.
+* **Field of view: leave it alone.** The mod forces at least 145 degrees while it runs,
+  whatever the menu says, so that no black margins appear at the edges of the view.
 
 ## Keys
 
 | Key | Function |
 |---|---|
-| **F5** | Toggle stereo on/off (it turns itself on when the menu appears). |
 | **Page Up / Page Down** | Eye separation +4 / −4 game units (default 54). Adjust until the world feels the right size. |
 | **End** | Size of the virtual screen used for menus and HUD (53° / 75° / 90°). |
 | **Insert** | Head tracking on (default) / off. Turning it on re-centres the view. |
-| **Space** | Re-centre position: the camera goes back to the character's eyes. |
+| **Home** | Re-centre position: the camera goes back to the character's eyes. |
 | **Delete** | Toggle between *free look* (the character does not turn with your head) and *walk where I look* (the character turns to follow the headset). |
 
 ## How it works
@@ -120,7 +129,8 @@ Then copy the three files from `output\Release\` (`dxgi.dll`, `BladeVR.dll` and
 
 The mod writes no files by default. To get a log, create an empty file named
 `BladeVR_debug.txt` next to `Blade.exe`; the mod will then write
-`bin\bin\BladeVR_logs\BladeVR_<pid>_<date>.log` on every run.
+`bin\bin\BladeVR_logs\BladeVR_<pid>_<date>.log` on every run: the modules it installs, the
+SteamVR handshake, the per-eye frustums and a summary every few seconds.
 
 ## Layout
 
@@ -130,6 +140,7 @@ hookdll/                 BladeVR.dll
   Dx11Hook.*             Present/ResizeBuffers/CreateSwapChain, submission to SteamVR
   ProjectionHook.*       capture of the projection matrix (VS slot 0)
   StereoHook.*           split-viewport stereo and stereo keys
+  FovHook.*              minimum field of view (character selection, cinematics)
   OpenVRHook.*           SteamVR: init, poses, frustums, Submit
   HeadTrackHook.*        6DOF head tracking and collision
   SceneCullingRootHook.* culling kept consistent with the rewritten view
@@ -141,15 +152,21 @@ ThirdParty/openvr/       openvr.h, openvr_api.lib, openvr_api.dll (OpenVR SDK)
 
 ## Known limitations
 
-* The character selection screen and each character's opening cinematic are shown on a
-  rectangular, letterboxed screen with black margins (a "box" effect), and some objects
-  spill over into the black area.
-* The intro video and the first loading screen are shown with wrong separation (stereo turns
-  on when the menu appears).
+* The glow of torches and other lights does not fade towards the edges of your view as it
+  does in the flat game. The game fades it over its own frame, which in VR is far wider than
+  what each eye sees, so a torch you look at out of the corner of your eye keeps its full
+  halo instead of shrinking.
+* The character sheet in the character selection screen appears to drift slightly when you
+  turn your head.
 * Thin black slivers can appear at the edges of some portals: the engine clips each sector's
   geometry against the portal from the central camera, not from each eye.
 * Weapons and the shield clip through walls and objects as in the original game, and in third
   person the camera can enter the character.
+* The mirror on your monitor does not show the screens anchored in front of you (the F1 combo
+  list and the character sheet): those go straight to the SteamVR overlay and never pass
+  through the game's own image.
+* VR motion controllers are not supported: you play with keyboard and mouse or with a
+  gamepad, as in the flat game.
 
 ## Licence
 

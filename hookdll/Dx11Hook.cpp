@@ -4,6 +4,7 @@
 #include "StereoHook.h"
 #include "OpenVRHook.h"
 #include "HeadTrackHook.h"
+#include "FovHook.h"
 #include <windows.h>
 #include <d3d11.h>
 #include <dxgi1_2.h>
@@ -13,6 +14,7 @@
 #include <sstream>
 #include <string>
 #include <cstdint>
+#include <cmath>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -42,6 +44,8 @@ static IDXGISwapChain* g_lastSwapChain = nullptr;        // solo para detectar c
 // Copia del backbuffer que se entrega a SteamVR (el backbuffer del juego no
 // tiene BIND_SHADER_RESOURCE y el compositor no lo acepta directamente).
 static ID3D11Texture2D* g_sbsSnapshot = nullptr;
+static ID3D11Texture2D* g_flatCopy = nullptr;
+static HWND g_gameWindow = nullptr;   // copia del fotograma que ensena la pantalla anclada
 static UINT g_sbsWidth = 0;
 static UINT g_sbsHeight = 0;
 static DXGI_FORMAT g_sbsFormat = DXGI_FORMAT_UNKNOWN;
@@ -88,12 +92,12 @@ struct DeferredDeviceNotification { IUnknown* device; };
 
 static DWORD WINAPI DeferredDeviceThreadProc(LPVOID param) {
     DeferredDeviceNotification* data = static_cast<DeferredDeviceNotification*>(param);
-    ID3D11Device* d3dDevice = nullptr;
-    if (data->device &&
-        SUCCEEDED(data->device->QueryInterface(__uuidof(ID3D11Device), reinterpret_cast<void**>(&d3dDevice))) && d3dDevice) {
-        InstallContextHooks(d3dDevice, "IDXGIFactory::CreateSwapChain");
-        d3dDevice->Release();
-    }
+    // Los hooks del contexto NO se instalan aqui: el juego crea una cadena de
+    // intercambio antes que la suya de verdad (con otro dispositivo Direct3D),
+    // y al engancharnos a ese contexto nos llegaban unos pocos draws por
+    // segundo en vez de los del juego. Se instalan en el primer Present, que
+    // es siempre el de la cadena que se esta dibujando de verdad.
+    (void)data;
     if (data->device) data->device->Release();
     delete data;
     return 0;
@@ -158,6 +162,7 @@ static ID3D11Texture2D* g_monitorRtvTexture = nullptr;   // backbuffer para el q
 
 static void ReleaseSbsSnapshot() {
     if (g_sbsSnapshot) { g_sbsSnapshot->Release(); g_sbsSnapshot = nullptr; }
+    if (g_flatCopy) { g_flatCopy->Release(); g_flatCopy = nullptr; }
     g_sbsWidth = 0; g_sbsHeight = 0; g_sbsFormat = DXGI_FORMAT_UNKNOWN;
     if (g_monitorRtv) { g_monitorRtv->Release(); g_monitorRtv = nullptr; }
     g_monitorRtvTexture = nullptr;
@@ -190,6 +195,7 @@ static ID3D11Texture2D* CaptureBackbuffer(IDXGISwapChain* swapChain, D3D11_TEXTU
             HookLogger::Instance().Line("[DX11] ERROR: no se pudo crear la textura de captura.");
             return nullptr;
         }
+        if (FAILED(g_gameDevice->CreateTexture2D(&sd, nullptr, &g_flatCopy))) g_flatCopy = nullptr;
         g_sbsWidth = desc.Width;
         g_sbsHeight = desc.Height;
         g_sbsFormat = desc.Format;
@@ -211,6 +217,54 @@ static ID3D11Texture2D* CaptureBackbuffer(IDXGISwapChain* swapChain, D3D11_TEXTU
 // Entrega g_sbsSnapshot a SteamVR. Orden: Submit (con la pose con la que se
 // dibujo) y DESPUES WaitGetPoses. La primera vez se hace un WaitGetPoses
 // previo: el compositor exige uno antes de aceptar el primer Submit.
+// Fase plana (video de intro, cargas, menu principal): el fotograma entero se muestra
+// en un overlay de SteamVR anclado al mundo, colocado delante del visor
+// segun su pose en el primer fotograma (o al pulsar Inicio), nivelada
+// (solo guinada). Asi el usuario puede mover la cabeza y la pantalla no va
+// pegada a la cara. (Se probo enviar el fotograma al compositor con esa pose
+// fija para que lo reproyectara y se descarto: al girar la cabeza el
+// compositor funde la imagen y muestra su entorno.)
+static float g_flatPose[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
+static bool g_flatPoseValid = false;
+
+// (Se probo alejar la pantalla anclada a 8 m agrandandola en la misma
+// proporcion, para quitar el paralaje que se nota en la ficha de personaje
+// al girar la cabeza -- los ojos se desplazan unos centimetros sobre el
+// cuello y una pantalla a 1.8 m se separa unos grados del escenario lejano.
+// Descartado: el efecto es pequeno y solo se aprecia en esa pantalla.)
+
+static bool CaptureFlatPose() {
+    float hmd[12];
+    if (!GetHmdPoseMatrix34(hmd)) return false;
+    // La pantalla va siempre "al frente": en la direccion que el visor miraba
+    // al centrar la vista (la misma referencia que usa el seguimiento de
+    // cabeza), nivelada y a la altura de los ojos. Asi el menu aparece
+    // centrado mire donde mire el usuario en ese momento. (Se probo colocarla
+    // en la direccion de la mirada y se descarto.)
+    double centerYaw = 0.0;
+    float fx, fz;
+    if (HeadTrackGetCenterYawRad(&centerYaw)) {
+        fx = static_cast<float>(sin(centerYaw));
+        fz = static_cast<float>(-cos(centerYaw));
+    } else {
+        // Sin referencia todavia (video de introduccion, seguimiento apagado):
+        // la direccion actual del visor, nivelada.
+        fx = -hmd[0 * 4 + 2];
+        fz = -hmd[2 * 4 + 2];
+        float len = sqrtf(fx * fx + fz * fz);
+        if (len < 1e-3f) { fx = 0.0f; fz = -1.0f; len = 1.0f; }   // mirando al techo o al suelo
+        fx /= len; fz /= len;
+    }
+    // Columnas de la rotacion: 0 = derecha, 1 = arriba (mundo), 2 = atras.
+    float d = StereoUiDistanceM();
+    g_flatPose[0] = -fz;  g_flatPose[1] = 0.0f; g_flatPose[2]  = -fx; g_flatPose[3]  = hmd[3]  + d * fx;
+    g_flatPose[4] = 0.0f; g_flatPose[5] = 1.0f; g_flatPose[6]  = 0.0f; g_flatPose[7]  = hmd[7];
+    g_flatPose[8] =  fx;  g_flatPose[9] = 0.0f; g_flatPose[10] = -fz; g_flatPose[11] = hmd[11] + d * fz;
+    g_flatPoseValid = true;
+    HookLogger::Instance().Line("[STEREO] Pantalla anclada centrada al frente.");
+    return true;
+}
+
 static void SubmitFrameToVR() {
     if (!IsOpenVRAvailable() || !g_sbsSnapshot) return;
     static bool s_firstPumpDone = false;
@@ -218,9 +272,53 @@ static void SubmitFrameToVR() {
         PumpOpenVRFrameTiming();
         s_firstPumpDone = true;
     }
-    bool mono = !StereoIsEnabled();
+    bool mono = false;
     float renderPose[12];
     const float* posePtr = (!mono && HeadTrackGetRenderPose(renderPose)) ? renderPose : nullptr;
+    // Fase plana para este fotograma si se dibujo plano, o si es el de
+    // transicion (dibujado en estereo pero el siguiente ya sera plano: se
+    // muestra su mitad izquierda para que el menu no aparezca un instante
+    // en estereo).
+    bool frameFlat = StereoFrameWasFlat();
+    ID3D11Texture2D* uiOverlayTex = StereoUiOverlayTextureOfFrame();
+    if (!mono && frameFlat && !StereoInFlatPhase() && g_flatCopy && g_flatPoseValid) {
+        // Fotograma de salida de la fase plana: dibujado plano (ya sin menu)
+        // pero el siguiente ya es estereo. No se ensena: la pantalla anclada
+        // sigue con la copia del ultimo fotograma plano (el menu) un
+        // fotograma mas, sobre negro, y el siguiente ya llega en estereo.
+        if (SubmitBlackScene(g_sbsSnapshot)) {
+            PumpOpenVRFrameTiming();
+            return;
+        }
+        mono = true;
+    } else if (!mono && frameFlat) {
+        // Fotograma dibujado plano: va entero a la pantalla anclada. Un
+        // fotograma dibujado en ESTEREO nunca pasa por aqui: se entrega como
+        // estereo aunque el siguiente vaya a ser plano. (Se probo ensenar su
+        // mitad izquierda en la pantalla anclada y se descarto: al pausar se
+        // veia un instante el juego plano con otro encuadre.)
+        if ((GetAsyncKeyState(VK_HOME) & 0x8000) != 0) g_flatPoseValid = false;   // recentrar
+        if (!g_flatPoseValid) CaptureFlatPose();
+        // La pantalla anclada ensena una COPIA del fotograma, para que en el
+        // fotograma de salida no cambie aunque se vuelva a capturar el backbuffer.
+        ID3D11Texture2D* shown = g_sbsSnapshot;
+        if (g_flatCopy) { g_gameContext->CopyResource(g_flatCopy, g_sbsSnapshot); shown = g_flatCopy; }
+        if (g_flatPoseValid && ShowFlatScreen(shown, g_flatPose, 2.0f * StereoUiHalfWidthM(), false)) {
+            PumpOpenVRFrameTiming();
+            return;
+        }
+        mono = true;   // sin overlay: al menos imagen plana identica en los dos ojos
+        posePtr = nullptr;
+    } else if (!mono && uiOverlayTex) {
+        // Modo interfaz anclada (pantalla de combos): escena en estereo y la
+        // interfaz, dibujada aparte, en el overlay anclado delante.
+        if ((GetAsyncKeyState(VK_HOME) & 0x8000) != 0) g_flatPoseValid = false;
+        if (!g_flatPoseValid) CaptureFlatPose();
+        if (g_flatPoseValid) ShowAnchoredOverlay(uiOverlayTex, g_flatPose, 2.0f * StereoUiHalfWidthM(), false);
+    } else {
+        HideFlatScreen();
+        g_flatPoseValid = false;   // al volver a la fase plana (menu principal) se recoloca delante
+    }
     if (SubmitSideBySideTexture(g_sbsSnapshot, posePtr, mono)) g_sbsSubmits.fetch_add(1, std::memory_order_relaxed);
     PumpOpenVRFrameTiming();
 }
@@ -229,7 +327,7 @@ static void SubmitFrameToVR() {
 // que el monitor no muestre la imagen partida. Solo con el estereo activo y
 // backbuffer sin multimuestreo (CopySubresourceRegion no admite MSAA).
 static void MirrorLeftEyeToMonitor(ID3D11Texture2D* backbuffer, const D3D11_TEXTURE2D_DESC& desc) {
-    if (!kMirrorLeftEyeOnMonitor || !StereoIsEnabled() || !g_sbsSnapshot) return;
+    if (!kMirrorLeftEyeOnMonitor || StereoFrameWasFlat() || !g_sbsSnapshot) return;
     if (desc.SampleDesc.Count > 1 || (desc.BindFlags & D3D11_BIND_RENDER_TARGET) == 0) return;
 
     if (!g_monitorRtv || g_monitorRtvTexture != backbuffer) {
@@ -263,13 +361,21 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* pSwapChain, UINT 
             g_lastSwapChain = pSwapChain;
             DXGI_SWAP_CHAIN_DESC desc{};
             if (SUCCEEDED(pSwapChain->GetDesc(&desc))) {
+                g_gameWindow = desc.OutputWindow;
                 std::ostringstream o;
                 o << "[DX11] Swap chain " << desc.BufferDesc.Width << "x" << desc.BufferDesc.Height
                   << " formato=" << desc.BufferDesc.Format << " buffers=" << desc.BufferCount
                   << " ventana=" << (desc.Windowed ? "si" : "no");
                 HookLogger::Instance().Line(o.str());
             }
-            if (!g_gameDevice) {
+            // Solo se adopta como cadena del juego una de tamano razonable: al
+            // cargarnos tan pronto podemos ver antes alguna cadena auxiliar
+            // (pequena) y engancharnos al contexto equivocado.
+            bool looksLikeGame = (desc.BufferDesc.Width >= 800 && desc.BufferDesc.Height >= 600);
+            if (!g_gameDevice && !looksLikeGame) {
+                HookLogger::Instance().Line("[DX11] Cadena de intercambio auxiliar ignorada (demasiado pequena).");
+            }
+            if (!g_gameDevice && looksLikeGame) {
                 ID3D11Device* device = nullptr;
                 if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D11Device), reinterpret_cast<void**>(&device))) && device) {
                     g_gameDevice = device;                       // nos quedamos la referencia
@@ -281,6 +387,7 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* pSwapChain, UINT 
         g_presentCallCount++;
     }
 
+    StereoEndFrame();   // decide la fase plana del fotograma siguiente (y sabe como se dibujo este)
     {
         D3D11_TEXTURE2D_DESC desc{};
         ID3D11Texture2D* backbuffer = CaptureBackbuffer(pSwapChain, &desc);
@@ -401,6 +508,8 @@ void LogDx11Summary() {
 
 ID3D11Device* GetGameDevice() { return g_gameDevice; }
 ID3D11DeviceContext* GetGameDeviceContext() { return g_gameContext; }
+void* GetGameWindow() { return g_gameWindow; }
+
 unsigned long long GetPresentCallCount() { return g_presentCallCount.load(std::memory_order_relaxed); }
 
 } // namespace BladeVR

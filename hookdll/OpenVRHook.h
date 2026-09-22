@@ -28,6 +28,10 @@ namespace BladeVR {
 bool InstallOpenVRHook();
 void UninstallOpenVRHook();
 
+// Deja de hablar con OpenVR sin apagarlo (para el cierre del proceso: apagar
+// OpenVR con el juego todavia vivo terminaba en una excepcion en vrclient).
+void StopOpenVRUse();
+
 bool IsOpenVRAvailable();
 
 // Entrega una textura lado a lado (mitad izquierda = ojo izquierdo) a los
@@ -48,6 +52,33 @@ void PumpOpenVRFrameTiming();
 // columnas = ejes del visor en el espacio de seguimiento, ultima columna =
 // posicion en metros). false si aun no hay pose valida.
 bool GetHmdPoseMatrix34(float* out12);
+
+// Pantalla plana anclada al mundo para la fase de arranque (video de intro,
+// carga inicial): un overlay de SteamVR con el fotograma entero, colocado con
+// la transformacion screenPose12 (3x4, en el espacio de seguimiento del
+// compositor; el cuadro mira hacia +z local) y de widthM metros de ancho,
+// sobre una escena negra enviada al compositor. HideFlatScreen la oculta
+// (idempotente).
+// leftHalfOnly: la textura es lado a lado y solo se muestra la mitad izquierda
+// (fotograma de transicion dibujado en estereo).
+bool ShowFlatScreen(ID3D11Texture2D* frameTex, const float* screenPose12, float widthM, bool leftHalfOnly);
+// Solo el overlay (sin escena negra): para poner la interfaz, dibujada en
+// una textura RGBA aparte, anclada delante del usuario sobre la escena 3D en
+// estereo que se entrega con SubmitSideBySideTexture.
+bool ShowAnchoredOverlay(ID3D11Texture2D* tex, const float* screenPose12, float widthM, bool leftHalfOnly);
+void HideFlatScreen();
+// Solo la escena negra (el overlay se deja como este): para el fotograma de
+// salida de la fase plana, en el que la pantalla anclada sigue ensenando el
+// ultimo fotograma plano.
+bool SubmitBlackScene(ID3D11Texture2D* like);
+
+// Devuelve una interfaz de OpenVR por su version (la misma que usaria
+// vr::VR_GetGenericInterface); nullptr si OpenVR no esta cargado. La usa
+// VrInput para pedir IVRInput sin volver a cargar openvr_api.dll.
+void* GetOpenVRInterface(const char* interfaceVersion);
+
+// Abre el panel de SteamVR (boton Menu mantenido).
+void OpenVRShowDashboard();
 
 void LogOpenVRSummary();
 

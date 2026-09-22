@@ -48,6 +48,7 @@ static std::unordered_map<uintptr_t, PendingMap> g_pendingMaps;
 
 static std::atomic<uintptr_t> g_boundVSSlot0{0};
 
+
 // Perspectiva pura con la convencion del juego (vector fila): m[11] = 1
 // (w = z), m[15] = 0, escala en m[0] y m[5], near/far en m[10] y m[14], y el
 // resto ceros. m[5] es negativo en este juego (Y de pantalla hacia abajo).
