@@ -64,7 +64,7 @@ void HookLogger::Init(unsigned long pid) {
 
     if (m_initialized) {
         m_file << "==================================================\n";
-        m_file << "BladeVR.dll log (inyectado en PID " << pid << ")\n";
+        m_file << "BladeVR " << kBladeVRVersion << " - log (inyectado en PID " << pid << ")\n";
         m_file << "Iniciado: " << Timestamp() << "\n";
         m_file << "==================================================\n";
         m_file.flush();

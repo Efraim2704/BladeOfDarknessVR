@@ -6,10 +6,11 @@ struct ID3D11Texture2D;
 namespace BladeVR {
 
 // ---------------------------------------------------------------------
-// Estereo por viewport partido (ver el comentario de cabecera de
-// StereoHook.cpp). Hookea Draw/DrawIndexed en la vtable del contexto del
-// juego y emite cada draw 3D dos veces, una por ojo, en cada mitad del
-// render target. Tambien guarda los ajustes de usuario y lee sus teclas.
+// Estereo lado a lado (ver el comentario de cabecera de StereoHook.cpp).
+// Hookea Draw/DrawIndexed en la vtable del contexto del juego. Los draws de
+// las pasadas del mundo por ojo (SceneCullingRootHook) se dibujan una vez,
+// en su mitad, con el frustum de su ojo; el resto de draws 3D se emiten dos
+// veces, una por ojo. Tambien guarda los ajustes de usuario y lee sus teclas.
 // ---------------------------------------------------------------------
 bool InstallStereoHook(ID3D11DeviceContext* context);
 void UninstallStereoHook();

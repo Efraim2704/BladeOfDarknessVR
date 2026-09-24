@@ -8,7 +8,8 @@ namespace BladeVR {
 //   Insert   : seguimiento activo (por defecto) / apagado; cada activacion recentra.
 //   Inicio   : recentra la posicion (la camara vuelve a los ojos del personaje).
 //   Supr     : personaje independiente (vista libre) <-> el personaje
-//              camina hacia donde mira el visor.
+//              camina hacia donde mira el visor (el giro le llega solo al
+//              juego; el raton de Windows no se mueve).
 // ---------------------------------------------------------------------
 bool InstallHeadTrackHooks();
 void UninstallHeadTrackHooks();

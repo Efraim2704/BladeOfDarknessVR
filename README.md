@@ -17,14 +17,17 @@ The game files are not modified. The mod is a DLL that is loaded when `Blade.exe
 
 ## What works
 
-* **Real stereo 3D.** Every 3D draw call is rendered twice, once per eye, with the headset's
-  own per-eye projection. The world, characters, weapons, shadows and the sky all have correct
-  depth. Menus and the HUD are shown on a comfortable virtual screen.
+* **Real stereo 3D.** The engine draws the world twice per frame, once from each eye, with
+  the headset's own per-eye projection. Each eye gets its own portal clipping, shadows,
+  reflections and lighting, so there are no seams at the edges of doorways or columns. The
+  world, characters, weapons, shadows, water and the sky all have correct depth. Menus and the
+  HUD are shown on a comfortable virtual screen.
 * **6DOF head tracking.** The camera follows the rotation *and* position of the headset,
   anchored to the game's own camera, in both first and third person. Leaning into walls or
   objects is prevented using the engine's own collision.
 * **"Walk where I look" mode.** Optional: the character turns to follow the headset so you
-  walk in the direction you are looking.
+  walk in the direction you are looking. The turn is delivered only to the game, so the
+  Windows mouse cursor is never moved.
 * The monitor shows the left eye centred (with black bars at the sides) instead of the
   split image; SteamVR's own "VR View" window is also available.
 * Played with **keyboard and mouse or a gamepad**, exactly as the original game. VR
@@ -72,7 +75,7 @@ the game runs normally without VR. To uninstall, delete the three files.
 
 | Key | Function |
 |---|---|
-| **Page Up / Page Down** | Eye separation +4 / −4 game units (default 54). Adjust until the world feels the right size. |
+| **Page Up / Page Down** | Eye separation +4 / −4 game units (default 58). Adjust until the world feels the right size. |
 | **End** | Size of the virtual screen used for menus and HUD (53° / 75° / 90°). |
 | **Insert** | Head tracking on (default) / off. Turning it on re-centres the view. |
 | **Home** | Re-centre position: the camera goes back to the character's eyes. |
@@ -86,14 +89,22 @@ loads `BladeVR.dll` from its `DllMain`. It also intercepts `CreateDXGIFactory*` 
 factory to the mod, which hooks `IDXGIFactory::CreateSwapChain` and learns the game's D3D11
 device before the first `Present`.
 
-**Stereo** (`StereoHook.cpp`). The engine transforms vertices on the CPU; the GPU only
-receives camera-space geometry plus a single projection matrix in vertex-shader constant
-buffer slot 0 (`ProjectionHook.cpp` captures it). Each 3D draw call is issued twice with the
-game's state untouched, changing only the viewport (left / right half of the render target)
-and that constant buffer (per-eye matrix built from the headset's asymmetric frustum plus an
-off-axis eye offset). The back buffer ends up side-by-side and is submitted to SteamVR with
-texture bounds `0..0.5` / `0.5..1`. The UI is drawn on a virtual screen 1.8 m away; the sky is
-drawn without eye offset (at infinity).
+**Stereo** (`SceneCullingRootHook.cpp`, `StereoHook.cpp`). The engine transforms vertices on
+the CPU and clips the level against portals from its camera; the GPU only receives
+camera-space geometry plus a single projection matrix in vertex-shader constant buffer slot 0
+(`ProjectionHook.cpp` captures it). The engine's world render (`B_Map::Render`) is called
+twice per frame, with the camera moved half the eye separation to the left and then to the
+right. Everything the engine caches per frame (portal clipping, vertex transform, character
+poses, shadows, lights) is keyed to a frame counter that this function increments itself, so
+the second pass is rebuilt from the other eye. The engine batches its draws and sends them to
+bgfx at the end of the frame; the batches of each pass are routed to copies of the engine's
+bgfx views whose viewport is the left or right half of the render target. `StereoHook.cpp`
+recognises those draws by their viewport and draws them once with that eye's asymmetric
+frustum. Flickering lights (torches) draw their random intensity only in the left pass, so
+both eyes see the same flame. Anything 3D drawn outside the world render is issued twice,
+once per eye, with an off-axis eye offset. The back buffer ends up side-by-side and is
+submitted to SteamVR with texture bounds `0..0.5` / `0.5..1`. The UI is drawn on a virtual
+screen 1.8 m away.
 
 **Head tracking** (`HeadTrackHook.cpp`). The engine's global view matrix (`fromWorld`, 4x4
 doubles) is written by one function once per frame. That function is hooked and, after the
@@ -103,7 +114,10 @@ added to the camera position, converted to game units and clamped with the engin
 cast so the camera never goes through walls or objects. The culling camera block is kept in
 sync with the rewritten view (`SceneCullingRootHook.cpp`) so shadows and entities are visible
 in every direction. The pose used for rendering is attached to the `Submit`
-(`Submit_TextureWithPose`) so the compositor reprojects correctly.
+(`Submit_TextureWithPose`) so the compositor reprojects correctly. In *walk where I look*
+mode the character is turned with mouse movement that only the game sees: a raw-input message
+posted to its window, whose contents are supplied by `GetRawInputData`, hooked in the game's
+import table.
 
 **Game addresses.** The `Blade.exe` offsets (the `k...` constants at the top of
 `HeadTrackHook.cpp`, `SceneCullingRootHook.cpp` and `FromWorldLocator.cpp`) match the Steam
@@ -130,7 +144,8 @@ Then copy the three files from `output\Release\` (`dxgi.dll`, `BladeVR.dll` and
 The mod writes no files by default. To get a log, create an empty file named
 `BladeVR_debug.txt` next to `Blade.exe`; the mod will then write
 `bin\bin\BladeVR_logs\BladeVR_<pid>_<date>.log` on every run: the modules it installs, the
-SteamVR handshake, the per-eye frustums and a summary every few seconds.
+SteamVR handshake, the per-eye frustums and a short summary every minute (frame rate, worst
+frame, whether the world is being drawn per eye). Please attach it when reporting a problem.
 
 ## Layout
 
@@ -139,11 +154,11 @@ hookdll/                 BladeVR.dll
   dllmain.cpp            entry point, module installation order
   Dx11Hook.*             Present/ResizeBuffers/CreateSwapChain, submission to SteamVR
   ProjectionHook.*       capture of the projection matrix (VS slot 0)
-  StereoHook.*           split-viewport stereo and stereo keys
+  StereoHook.*           side-by-side stereo, flat screen, anchored UI, keys
   FovHook.*              minimum field of view (character selection, cinematics)
   OpenVRHook.*           SteamVR: init, poses, frustums, Submit
   HeadTrackHook.*        6DOF head tracking and collision
-  SceneCullingRootHook.* culling kept consistent with the rewritten view
+  SceneCullingRootHook.* world drawn once from each eye; culling kept in sync
   FromWorldLocator.*     finds the global view matrix in memory
   HookLogger.*           optional log
 proxydll/                dxgi.dll proxy (ProxyMain.cpp + MASM thunks)
@@ -158,8 +173,6 @@ ThirdParty/openvr/       openvr.h, openvr_api.lib, openvr_api.dll (OpenVR SDK)
   halo instead of shrinking.
 * The character sheet in the character selection screen appears to drift slightly when you
   turn your head.
-* Thin black slivers can appear at the edges of some portals: the engine clips each sector's
-  geometry against the portal from the central camera, not from each eye.
 * Weapons and the shield clip through walls and objects as in the original game, and in third
   person the camera can enter the character.
 * The mirror on your monitor does not show the screens anchored in front of you (the F1 combo
@@ -167,6 +180,15 @@ ThirdParty/openvr/       openvr.h, openvr_api.lib, openvr_api.dll (OpenVR SDK)
   through the game's own image.
 * VR motion controllers are not supported: you play with keyboard and mouse or with a
   gamepad, as in the flat game.
+
+## Version history
+
+* **1.2** — The world is now drawn by the engine from each eye. No more black slivers at the
+  edges of doorways and columns; shadows, water reflections and torch light are correct in
+  both eyes. *Walk where I look* (Delete) now turns the character without moving the
+  Windows mouse. Default eye separation 58.
+* **1.0** — First release: stereo 3D, 6DOF head tracking, flat screen for videos and menus,
+  minimum field of view.
 
 ## Licence
 

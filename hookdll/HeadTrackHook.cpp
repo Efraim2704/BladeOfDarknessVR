@@ -42,15 +42,13 @@ namespace BladeVR {
 //    Submit (Submit_TextureWithPose) para que el compositor reproyecte
 //    respecto a la pose exacta con la que se dibujo.
 //  * Submodo "camina hacia donde mira" (Supr): la vista es absoluta y un
-//    lazo cerrado envia raton (solo X) para llevar la guinada del juego
-//    hacia la del visor.
+//    lazo cerrado gira al personaje hasta la guinada del visor con
+//    movimiento de raton (solo X) que llega UNICAMENTE al juego: un WM_INPUT
+//    propio cuyo contenido sirve GetRawInputData, enganchada en la tabla de
+//    importaciones de Blade.exe. El raton de Windows no se toca.
 // =====================================================================
 
 // --- offsets del juego -------------------------------------------------
-static constexpr uintptr_t kCameraGlobalOffset = 0xF4A6A8;   // -> ptr1 (objeto de app)
-static constexpr uintptr_t kCameraEntityOffset = 0xE8;       // ptr1+0xE8 -> entidad Camera
-static constexpr uintptr_t kCameraPositionOffset = 0x550;    // Position (3 doubles)
-static constexpr uintptr_t kCameraTPosOffset = 0x568;        // TPos (3 doubles)
 static constexpr uintptr_t kFromWorldWriterRipOffset = 0x72e55;      // dentro de la funcion que escribe fromWorld
 static constexpr uintptr_t kFromWorldFinalCallReturnOffset = 0x5a81d; // retorno de la ultima llamada por fotograma (partida)
 // Las dos primeras llamadas por fotograma en partida (estados intermedios de
@@ -106,10 +104,8 @@ static bool g_followHaveOffset = false;
 static double g_followYawOffset = 0.0;
 static double g_followYawError = 0.0;
 static double g_followAccX = 0.0;
-static double g_lastYawDeg = 0.0;
-static double g_lastPitchDeg = 0.0;
+static bool g_followErrorFresh = false;   // error recalculado desde el ultimo paso
 static double g_lastOffsetM[3] = {0.0, 0.0, 0.0};
-static double g_lastCam[3] = {0.0, 0.0, 0.0};
 
 static std::mutex g_renderPoseMutex;
 static float g_renderPose[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
@@ -119,10 +115,9 @@ static PFN_Generic4 g_originalFromWorldWriter = nullptr;
 static uintptr_t g_fromWorldWriterStart = 0;
 static bool g_fromWorldWriterHookInstalled = false;
 
-// contadores del log por segundo
+// contadores del resumen del log (un minuto)
 static std::atomic<uint64_t> g_fwCallsSec{0};
 static std::atomic<uint64_t> g_fwWritesSec{0};
-static std::atomic<double> g_lastWrittenYawDeg{0.0};   // guinada de la ultima fromWorld que escribimos
 static std::mutex g_lastWrittenMutex;
 static double g_lastWritten[16] = {};                   // ultima fromWorld que escribimos (para detectar si el juego la piso)
 static bool g_haveLastWritten = false;
@@ -148,13 +143,8 @@ static std::atomic<uint64_t> g_cullOtherPoseSec{0};   // ... cuyo bloque NO es e
 static std::atomic<uint64_t> g_noPose{0};
 static std::atomic<uint64_t> g_rayClampSec{0};
 static std::atomic<uint64_t> g_pushOutSec{0};
-static std::atomic<uint64_t> g_mouseSentSec{0};
-static std::atomic<long long> g_mouseDxSec{0};
+static std::atomic<uint64_t> g_turnsSentSec{0};
 static std::atomic<uint64_t> g_lastLogTick{0};
-
-// Fase del mod en la que esta el hilo del juego (0 = dentro del codigo del
-// juego). Solo se usa para el log periodico.
-static std::atomic<int> g_gamePhase{0};
 
 static uintptr_t ModuleBase() {
     static uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
@@ -182,35 +172,6 @@ static std::string DescribeAddress(uintptr_t addr) {
 }
 
 // --- lecturas/escrituras seguras (solo POD + __try, regla C2712) ---------
-static bool SafeResolveCameraDoubles(uintptr_t moduleBase, double** outPosition, double** outTPos) {
-    __try {
-        uintptr_t ptr1 = *reinterpret_cast<uintptr_t*>(moduleBase + kCameraGlobalOffset);
-        if (!ptr1) return false;
-        uintptr_t ptr2 = *reinterpret_cast<uintptr_t*>(ptr1 + kCameraEntityOffset);
-        if (!ptr2) return false;
-        double* pos = reinterpret_cast<double*>(ptr2 + kCameraPositionOffset);
-        double* tpos = reinterpret_cast<double*>(ptr2 + kCameraTPosOffset);
-        volatile double touch = pos[0] + tpos[2];
-        (void)touch;
-        *outPosition = pos;
-        *outTPos = tpos;
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
-static bool SafeReadVec3(const double* src, double out[3]) {
-    __try {
-        out[0] = src[0];
-        out[1] = src[1];
-        out[2] = src[2];
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
 static bool SafeReadMatrix16(const double* src, double out[16]) {
     __try {
         for (int i = 0; i < 16; ++i) out[i] = src[i];
@@ -230,7 +191,6 @@ static bool SafeWriteMatrix16(double* dst, const double src[16]) {
 }
 
 static bool SafePointSector(const double p[3], long long* outSector) {
-    g_gamePhase.store(11, std::memory_order_relaxed);
     __try {
         uintptr_t base = ModuleBase();
         PFN_GetLevel getLevel = reinterpret_cast<PFN_GetLevel>(base + kGetLevelOffset);
@@ -252,7 +212,6 @@ static bool SafePointInsideLevel(const double p[3], bool* outInside) {
 }
 
 static bool SafeRayCast(const double from[3], const double to[3], bool* outHit, double hit[3]) {
-    g_gamePhase.store(10, std::memory_order_relaxed);
     __try {
         uintptr_t base = ModuleBase();
         PFN_GetLevel getLevel = reinterpret_cast<PFN_GetLevel>(base + kGetLevelOffset);
@@ -409,8 +368,121 @@ static double WrapPi(double a) {
     return a;
 }
 
-// --- submodo "camina hacia donde mira": lazo cerrado con raton ----------
+// --- giro del personaje sin tocar el raton de Windows -----------------------
+// SDL (enlazado en Blade.exe) lee el raton en modo relativo con WM_INPUT +
+// GetRawInputData (Blade.exe+0x40bea6, dentro de su WindowProc) y lo pasa a
+// SDL_SendMouseMotion. Para girar al personaje se manda a la ventana del
+// juego un WM_INPUT con un "handle" propio (etiqueta en los 32 bits altos,
+// desplazamiento X en los bajos) y la GetRawInputData enganchada en la tabla
+// de importaciones de Blade.exe devuelve para el un movimiento relativo de
+// raton. Solo lo ve el juego: el cursor de Windows no se mueve. SDL lo ignora
+// por si solo cuando no esta en modo relativo (menus) o la ventana no tiene
+// el foco.
+static constexpr unsigned long long kFakeRawInputTag = 0xB1ADull;
+using PFN_GetRawInputData = UINT(WINAPI*)(HRAWINPUT, UINT, LPVOID, PUINT, UINT);
+static PFN_GetRawInputData g_originalGetRawInputData = nullptr;
+static PFN_GetRawInputData* g_rawInputImportSlot = nullptr;
+static std::atomic<bool> g_rawTurnReady{false};
+
+static UINT WINAPI HookedGetRawInputData(HRAWINPUT hRawInput, UINT command, LPVOID data, PUINT size, UINT headerSize) {
+    unsigned long long v = reinterpret_cast<unsigned long long>(hRawInput);
+    if ((v >> 32) != kFakeRawInputTag) {
+        return g_originalGetRawInputData(hRawInput, command, data, size, headerSize);
+    }
+    if (!size || headerSize != sizeof(RAWINPUTHEADER) || (command != RID_INPUT && command != RID_HEADER)) {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return static_cast<UINT>(-1);
+    }
+    UINT need = (command == RID_HEADER) ? static_cast<UINT>(sizeof(RAWINPUTHEADER))
+                                        : static_cast<UINT>(sizeof(RAWINPUT));
+    if (!data) { *size = need; return 0; }
+    if (*size < need) {
+        *size = need;
+        SetLastError(ERROR_INSUFFICIENT_BUFFER);
+        return static_cast<UINT>(-1);
+    }
+    RAWINPUT ri;
+    std::memset(&ri, 0, sizeof(ri));
+    ri.header.dwType = RIM_TYPEMOUSE;
+    ri.header.dwSize = sizeof(RAWINPUT);
+    ri.header.wParam = RIM_INPUTSINK;
+    ri.data.mouse.usFlags = MOUSE_MOVE_RELATIVE;
+    ri.data.mouse.lLastX = static_cast<LONG>(static_cast<int32_t>(static_cast<uint32_t>(v & 0xFFFFFFFFull)));
+    std::memcpy(data, &ri, need);
+    return need;
+}
+
+// Hueco de la tabla de importaciones de 'module' para dll!func (por nombre).
+static void** FindImportSlot(uintptr_t module, const char* dll, const char* func) {
+    const IMAGE_DOS_HEADER* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(module);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return nullptr;
+    const IMAGE_NT_HEADERS64* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(module + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return nullptr;
+    const IMAGE_DATA_DIRECTORY& dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    if (!dir.VirtualAddress) return nullptr;
+    const IMAGE_IMPORT_DESCRIPTOR* desc = reinterpret_cast<const IMAGE_IMPORT_DESCRIPTOR*>(module + dir.VirtualAddress);
+    for (; desc->Name; ++desc) {
+        if (_stricmp(reinterpret_cast<const char*>(module + desc->Name), dll) != 0) continue;
+        if (!desc->OriginalFirstThunk || !desc->FirstThunk) continue;
+        const IMAGE_THUNK_DATA64* names = reinterpret_cast<const IMAGE_THUNK_DATA64*>(module + desc->OriginalFirstThunk);
+        IMAGE_THUNK_DATA64* slots = reinterpret_cast<IMAGE_THUNK_DATA64*>(module + desc->FirstThunk);
+        for (; names->u1.AddressOfData; ++names, ++slots) {
+            if (IMAGE_SNAP_BY_ORDINAL64(names->u1.Ordinal)) continue;
+            const IMAGE_IMPORT_BY_NAME* ibn = reinterpret_cast<const IMAGE_IMPORT_BY_NAME*>(module + names->u1.AddressOfData);
+            if (std::strcmp(reinterpret_cast<const char*>(ibn->Name), func) == 0) {
+                return reinterpret_cast<void**>(&slots->u1.Function);
+            }
+        }
+    }
+    return nullptr;
+}
+
+static bool InstallRawTurnHook() {
+    if (g_rawTurnReady.load(std::memory_order_relaxed)) return true;
+    uintptr_t base = ModuleBase();
+    void** slot = base ? FindImportSlot(base, "USER32.dll", "GetRawInputData") : nullptr;
+    if (!slot) {
+        HookLogger::Instance().Line("[HEAD_TRACK] ERROR: no se encontro GetRawInputData en las importaciones del juego (Supr no girara al personaje).");
+        return false;
+    }
+    DWORD oldProtect = 0;
+    if (!VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+        HookLogger::Instance().Line("[HEAD_TRACK] ERROR: no se pudo escribir en la tabla de importaciones (Supr no girara al personaje).");
+        return false;
+    }
+    g_originalGetRawInputData = reinterpret_cast<PFN_GetRawInputData>(*slot);
+    InterlockedExchangePointer(slot, reinterpret_cast<void*>(&HookedGetRawInputData));
+    VirtualProtect(slot, sizeof(void*), oldProtect, &oldProtect);
+    g_rawInputImportSlot = reinterpret_cast<PFN_GetRawInputData*>(slot);
+    g_rawTurnReady.store(true, std::memory_order_relaxed);
+    HookLogger::Instance().Line("[HEAD_TRACK] Giro del personaje (Supr) por entrada interna del juego, sin mover el raton de Windows.");
+    return true;
+}
+
+static void UninstallRawTurnHook() {
+    if (!g_rawTurnReady.exchange(false, std::memory_order_relaxed) || !g_rawInputImportSlot) return;
+    DWORD oldProtect = 0;
+    if (VirtualProtect(g_rawInputImportSlot, sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+        InterlockedExchangePointer(reinterpret_cast<void**>(g_rawInputImportSlot),
+                                   reinterpret_cast<void*>(g_originalGetRawInputData));
+        VirtualProtect(g_rawInputImportSlot, sizeof(void*), oldProtect, &oldProtect);
+    }
+}
+
+static bool SendTurnToGame(long dx) {
+    if (!g_rawTurnReady.load(std::memory_order_relaxed)) return false;
+    HWND hwnd = static_cast<HWND>(GetGameWindow());
+    if (!hwnd) return false;
+    unsigned long long tagged = (kFakeRawInputTag << 32) | static_cast<unsigned long long>(static_cast<uint32_t>(static_cast<int32_t>(dx)));
+    return PostMessageW(hwnd, WM_INPUT, RIM_INPUTSINK, static_cast<LPARAM>(tagged)) != 0;
+}
+
+// --- submodo "camina hacia donde mira": lazo cerrado -----------------------
+// Solo actua cuando el juego acaba de escribir su camara (el error es de este
+// fotograma): en menus y pausas no se acumula nada.
 static void WalkFollowStep() {
+    if (!g_followErrorFresh) return;
+    g_followErrorFresh = false;
     double errDeg = g_followYawError * 180.0 / kPi;
     if (std::abs(errDeg) < kFollowDeadbandDeg) return;
     double k = g_mouseCountsPerDegreeX10.load(std::memory_order_relaxed) / 10.0;
@@ -421,14 +493,8 @@ static void WalkFollowStep() {
     if (dx > kFollowMaxCountsPerFrame) dx = kFollowMaxCountsPerFrame;
     if (dx < -kFollowMaxCountsPerFrame) dx = -kFollowMaxCountsPerFrame;
     g_followAccX -= dx;
-    INPUT in;
-    std::memset(&in, 0, sizeof(in));
-    in.type = INPUT_MOUSE;
-    in.mi.dx = dx;
-    in.mi.dwFlags = MOUSEEVENTF_MOVE;
-    if (SendInput(1, &in, sizeof(INPUT)) == 1) {
-        g_mouseSentSec.fetch_add(1, std::memory_order_relaxed);
-        g_mouseDxSec.fetch_add(dx, std::memory_order_relaxed);
+    if (SendTurnToGame(dx)) {
+        g_turnsSentSec.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
@@ -441,6 +507,7 @@ static void ResetReferences() {
     g_followHaveOffset = false;
     g_followYawError = 0.0;
     g_followAccX = 0.0;
+    g_followErrorFresh = false;
 }
 bool HeadTrackGetCenterYawRad(double* outYaw) {
     if (!outYaw) return false;
@@ -484,6 +551,7 @@ static void CheckKeys() {
             g_followHaveOffset = false;
             g_followYawError = 0.0;
             g_followAccX = 0.0;
+            g_followErrorFresh = false;
         }
         g_walkFollowsView.store(next, std::memory_order_relaxed);
         HookLogger::Instance().Line(next ? "[HEAD_TRACK] Supr: el personaje CAMINA HACIA DONDE MIRA el visor"
@@ -494,42 +562,28 @@ static void CheckKeys() {
 
 }
 
-// Guinada de la fromWorld global en este instante (para ver si el juego la
-// ha vuelto a escribir despues de nuestra reescritura).
-static double CurrentFromWorldYawDeg() {
-    double* fromWorld = TryGetOrResolveFromWorldPointer();
-    double fw[16];
-    if (!fromWorld || !SafeReadMatrix16(fromWorld, fw)) return 0.0;
-    return std::atan2(fw[2], fw[10]) * 180.0 / kPi;
-}
-
+// Una linea por minuto para los informes de fallos.
 static void MaybeLogRate() {
     uint64_t now = GetTickCount64();
     uint64_t last = g_lastLogTick.load(std::memory_order_relaxed);
-    if (now - last < 1000) return;
+    if (last == 0) { g_lastLogTick.store(now, std::memory_order_relaxed); return; }
+    if (now - last < 60000) return;
     g_lastLogTick.store(now, std::memory_order_relaxed);
     std::ostringstream o;
-    o << "[HEAD_TRACK] faseJuego=" << g_gamePhase.load(std::memory_order_relaxed)
-      << " modo=" << g_mode.load(std::memory_order_relaxed)
+    o << "[HEAD_TRACK] ultimo minuto: modo=" << g_mode.load(std::memory_order_relaxed)
       << " caminaHaciaVista=" << g_walkFollowsView.load(std::memory_order_relaxed)
-      << " errorGuinada=" << (g_followYawError * 180.0 / kPi)
-      << " guinada=" << g_lastYawDeg << " cabeceo=" << g_lastPitchDeg
       << " desplazamiento(m)=[" << g_lastOffsetM[0] << "," << g_lastOffsetM[1] << "," << g_lastOffsetM[2] << "]"
-      << " camJuego=[" << g_lastCam[0] << "," << g_lastCam[1] << "," << g_lastCam[2] << "]"
       << " unidades/m=" << g_unitsPerMeter.load(std::memory_order_relaxed)
       << " | fromWorld llamadas=" << g_fwCallsSec.exchange(0, std::memory_order_relaxed)
       << " reescrita=" << g_fwWritesSec.exchange(0, std::memory_order_relaxed)
       << " tardias=" << g_fwLateRewritesSec.exchange(0, std::memory_order_relaxed)
       << " rehechas=" << g_fwStaleRefreshSec.exchange(0, std::memory_order_relaxed)
       << " sinPose=" << g_noPose.exchange(0, std::memory_order_relaxed)
-      << " | fwEscrita guinada=" << g_lastWrittenYawDeg.load(std::memory_order_relaxed)
-      << " fwAhora guinada=" << CurrentFromWorldYawDeg()
       << " | culling llamadas=" << g_cullCallsSec.exchange(0, std::memory_order_relaxed)
       << " otraPose=" << g_cullOtherPoseSec.exchange(0, std::memory_order_relaxed)
       << " | colision recortes=" << g_rayClampSec.exchange(0, std::memory_order_relaxed)
       << " empujes=" << g_pushOutSec.exchange(0, std::memory_order_relaxed)
-      << " | raton enviados=" << g_mouseSentSec.exchange(0, std::memory_order_relaxed)
-      << " dx=" << g_mouseDxSec.exchange(0, std::memory_order_relaxed);
+      << " | giros enviados=" << g_turnsSentSec.exchange(0, std::memory_order_relaxed);
     HookLogger::Instance().Line(o.str());
 }
 
@@ -621,6 +675,7 @@ static void ApplyHeadTrackingToFromWorld(double* fromWorld, bool positional) {
             if (!g_followHaveOffset) { g_followYawOffset = WrapPi(baseYaw - hmdYawGame); g_followHaveOffset = true; }
             delta = g_followYawOffset;
             g_followYawError = WrapPi((hmdYawGame + g_followYawOffset) - baseYaw);
+            g_followErrorFresh = true;
         } else {
             g_followHaveOffset = false;
             delta = baseYaw - g_yawRef;
@@ -657,15 +712,10 @@ static void ApplyHeadTrackingToFromWorld(double* fromWorld, bool positional) {
         out[13] = -(cNew[0] * u[0] + cNew[1] * u[1] + cNew[2] * u[2]);
         out[14] = -(cNew[0] * f[0] + cNew[1] * f[1] + cNew[2] * f[2]);
 
-        g_lastYawDeg = WrapPi(hmdYawGame - g_yawRef) * 180.0 / kPi;
-        double fy = f[1] > 1.0 ? 1.0 : (f[1] < -1.0 ? -1.0 : f[1]);
-        g_lastPitchDeg = -std::asin(fy) * 180.0 / kPi;
         g_lastOffsetM[0] = off[0]; g_lastOffsetM[1] = off[1]; g_lastOffsetM[2] = off[2];
-        g_lastCam[0] = c[0]; g_lastCam[1] = c[1]; g_lastCam[2] = c[2];
     }
     if (SafeWriteMatrix16(fromWorld, out)) {
         g_fwWritesSec.fetch_add(1, std::memory_order_relaxed);
-        g_lastWrittenYawDeg.store(std::atan2(out[2], out[10]) * 180.0 / kPi, std::memory_order_relaxed);
         std::lock_guard<std::mutex> lock(g_lastWrittenMutex);
         for (int i = 0; i < 16; ++i) { g_lastWritten[i] = out[i]; g_lastBase[i] = game[i]; }
         g_haveLastWritten = true;
@@ -696,8 +746,6 @@ static bool RefreshStaleFromWorld(double* fromWorld) {
 static unsigned long long __fastcall HookedFromWorldWriter(unsigned long long a0, unsigned long long a1, unsigned long long a2, unsigned long long a3) {
     void* ret = _ReturnAddress();
     unsigned long long result = g_originalFromWorldWriter(a0, a1, a2, a3);
-    g_gamePhase.store(20, std::memory_order_relaxed);
-    struct PhaseReset { ~PhaseReset() { g_gamePhase.store(0, std::memory_order_relaxed); } } phaseReset;
     g_fwCallsSec.fetch_add(1, std::memory_order_relaxed);
 
     FovClampOnGameThread();              // FOV minimo (hilo del juego)
@@ -762,10 +810,13 @@ static bool InstallFromWorldWriterHook() {
 }
 
 bool InstallHeadTrackHooks() {
-    return InstallFromWorldWriterHook();
+    bool ok = InstallFromWorldWriterHook();
+    InstallRawTurnHook();   // si falla, solo Supr deja de girar al personaje
+    return ok;
 }
 
 void UninstallHeadTrackHooks() {
+    UninstallRawTurnHook();
     if (g_fromWorldWriterHookInstalled && g_fromWorldWriterStart) {
         MH_DisableHook(reinterpret_cast<void*>(g_fromWorldWriterStart));
         g_fromWorldWriterHookInstalled = false;
@@ -775,8 +826,6 @@ void UninstallHeadTrackHooks() {
 // --- bloque de camara del culling (+0x80f20) ----------------------------
 void HeadTrackSyncCullingCamera(long long param_2) {
     if (g_mode.load(std::memory_order_relaxed) != 1) return;
-    g_gamePhase.store(30, std::memory_order_relaxed);
-    struct PhaseReset { ~PhaseReset() { g_gamePhase.store(0, std::memory_order_relaxed); } } phaseReset;
     double* fromWorld = TryGetOrResolveFromWorldPointer();
     if (!fromWorld) return;
     g_cullCallsSec.fetch_add(1, std::memory_order_relaxed);

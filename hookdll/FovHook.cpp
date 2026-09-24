@@ -39,20 +39,6 @@ static void __fastcall HookedSetFov(long long app, float degrees) {
     g_originalSetFov(app, applied);
 }
 
-static bool SafeResolveAppFovAddress(uintptr_t* out) {
-    __try {
-        uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
-        uintptr_t app = *reinterpret_cast<uintptr_t*>(base + kAppPointerOffset);
-        if (!app) return false;
-        volatile float touch = *reinterpret_cast<float*>(app + kAppFovFactorOffset);
-        (void)touch;
-        *out = app + kAppFovFactorOffset;
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
-
 // Los controladores de camara de la seleccion de personaje (+0x58c18) y de
 // las cinematicas (+0x5952a, zoom progresivo) escriben el factor de FOV en
 // app+0x28c CADA fotograma sin pasar por SetFOV, asi que se recorta en el

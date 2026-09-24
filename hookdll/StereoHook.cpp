@@ -4,6 +4,7 @@
 #include "Dx11Hook.h"
 #include "OpenVRHook.h"
 #include "HeadTrackHook.h"
+#include "SceneCullingRootHook.h"
 #include <windows.h>
 #include <d3d11.h>
 #include <MinHook.h>
@@ -18,23 +19,29 @@
 namespace BladeVR {
 
 // =====================================================================
-// ESTEREO POR VIEWPORT PARTIDO
+// ESTEREO LADO A LADO
 //
 // Hechos sobre el motor en los que se apoya todo esto:
 //   * Los vertices llegan a la GPU YA en espacio de camara (T&L en CPU).
 //   * Toda la geometria 3D pasa por UNA matriz de proyeccion perspectiva en
-//     VS slot 0 (ver ProjectionHook). Desplazar el ojo es un off-axis:
-//     m[12] = -dx * m[0].
-//   * Re-ejecutar el fotograma del juego dos veces (una por ojo) provoca
-//     cuelgues y no es viable: el juego renderiza UNA sola vez, como siempre.
+//     VS slot 0 (ver ProjectionHook).
 //
-// Lo que se hace: cada draw call de geometria 3D se emite DOS veces
-// seguidas, con TODO el estado tal como lo dejo el juego (vertex buffers,
-// texturas, shaders, render target, profundidad), cambiando solo dos cosas:
+// El MUNDO lo dibuja el propio motor una vez desde cada ojo
+// (SceneCullingRootHook): dos pasadas por fotograma, cada una en su mitad
+// del render target. Aqui esos draws se reconocen por el viewport (una de
+// las mitades partidas, SceneEyeForViewport) y se dibujan UNA vez, con el
+// frustum asimetrico de su ojo y sin desplazamiento (la camara ya esta en
+// el ojo). Asi cada ojo tiene su propio recorte por portales, sus sombras y
+// sus reflejos: sin costuras.
+//
+// Lo demas (3D fuera de las pasadas del mundo, p. ej. el menu 3D, o si las
+// pasadas por ojo no se pudieran activar) se emite DOS veces seguidas, con
+// todo el estado del juego, cambiando solo:
 //   1) el viewport: mitad izquierda del render target para el ojo izquierdo,
 //      mitad derecha para el derecho;
 //   2) el constant buffer de VS slot 0: dos buffers PROPIOS con la matriz de
-//      cada ojo (frustum asimetrico del visor + desplazamiento de ojo).
+//      cada ojo (frustum asimetrico del visor + desplazamiento off-axis
+//      m[12] = -dx * m[0]).
 // El resultado es un render target en formato lado a lado (SBS), que
 // Dx11Hook entrega a SteamVR con bounds 0..0.5 y 0.5..1 (ver OpenVRHook).
 //
@@ -64,10 +71,28 @@ static PFN_Draw g_originalDraw = nullptr;
 static bool g_installed = false;
 
 // --- ajustes de usuario ---------------------------------------------------
-static std::atomic<float> g_eyeSeparationUnits{54.0f};   // valor calibrado con el visor puesto
+static std::atomic<float> g_eyeSeparationUnits{58.0f};   // valor calibrado con el visor puesto (v1.2)
 static std::atomic<int> g_uiSizePreset{1};
 static constexpr float kEyeSeparationStep = 4.0f;
 static constexpr float kEyeSeparationMax = 400.0f;
+
+// --- resumen para el log (un minuto) ---------------------------------------
+static std::atomic<uint64_t> g_framesInPeriod{0};
+// Peor fotograma del periodo, en decimas de ms: los tirones son fotogramas
+// sueltos que llegan tarde y solo los ensena el maximo.
+static std::atomic<long> g_worstFrameTenths{0};
+static constexpr uint64_t kSummaryPeriodMs = 60000;
+
+// --- destellos y chispas del mundo -------------------------------------------
+// El juego los dibuja SIN test de profundidad y con el render target sin
+// vista de profundidad enlazada (se fia de su propia comprobacion de
+// visibilidad, que en VR falla): se veian a traves de las paredes y del
+// cuerpo del personaje. Se guarda el DSV de la escena (el del primer draw
+// del nivel de cada fotograma) y se vuelve a enlazar solo para el sprite,
+// con test LESS_EQUAL y sin escritura.
+static ID3D11DepthStencilState* g_spriteDss = nullptr;
+static ID3D11DepthStencilView* g_sceneDsv = nullptr;   // solo hilo de render
+static uint64_t g_sceneDsvFrame = 0;
 
 // Fase plana: el video de introduccion, las pantallas de carga y los menus
 // (principal con su escenario de fondo, y pausa si usa el mismo fondo) se
@@ -171,12 +196,8 @@ static std::atomic<uint64_t> g_last3DFrame{~0ull};
 static constexpr float kUiDistanceM = 1.8f;     // distancia de la pantalla virtual de la interfaz
 static constexpr float kUiIpdM = 0.064f;
 
-// --- estado de reentrada y contadores ---------------------------------------
+// --- estado de reentrada ------------------------------------------------------
 static std::atomic<bool> g_inReplay{false};     // true mientras re-emitimos un draw (evita recursion)
-static std::atomic<uint64_t> g_draws3D{0};
-static std::atomic<uint64_t> g_draws2D{0};
-static std::atomic<uint64_t> g_drawsComposition{0};
-static std::atomic<uint64_t> g_drawsFlareSkipped{0};
 
 // El destello del sol es un sprite 2D que el juego dibuja, tras la primera
 // pasada de composicion, sobre el render target HDR de la escena (formato
@@ -294,7 +315,35 @@ static bool KeyPressedOnce(int vk, std::atomic<bool>& wasDown) {
     return down && !was;
 }
 
-void StereoEndFrame() { LatchFlatPhase(); }
+static void NoteFrameTime() {
+    static LARGE_INTEGER frequency = {};
+    static LARGE_INTEGER previous = {};
+    if (frequency.QuadPart == 0) {
+        QueryPerformanceFrequency(&frequency);
+        QueryPerformanceCounter(&previous);
+        return;
+    }
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    double ms = 1000.0 * static_cast<double>(now.QuadPart - previous.QuadPart) /
+                static_cast<double>(frequency.QuadPart);
+    previous = now;
+    if (ms <= 0.0 || ms > 2000.0) return;
+    long tenths = static_cast<long>(ms * 10.0);
+    long worst = g_worstFrameTenths.load(std::memory_order_relaxed);
+    while (tenths > worst &&
+           !g_worstFrameTenths.compare_exchange_weak(worst, tenths, std::memory_order_relaxed)) {
+    }
+}
+
+static void MaybeLogSummary();
+
+void StereoEndFrame() {
+    g_framesInPeriod.fetch_add(1, std::memory_order_relaxed);
+    NoteFrameTime();
+    LatchFlatPhase();
+    MaybeLogSummary();
+}
 
 void StereoPollKeys() {
     float delta = 0.0f;
@@ -432,17 +481,26 @@ static D3D11_VIEWPORT UiViewport(const D3D11_VIEWPORT& full, int eye, D3D11_RECT
 // Consultas de estado del pipeline
 // ---------------------------------------------------------------------
 
-// true si el draw actual tiene el test de profundidad desactivado: asi
-// dibuja Blade el cielo (geometria pegada a la camara vista por los huecos).
-static bool DepthTestDisabled(ID3D11DeviceContext* ctx) {
+// Como trata el draw actual la profundidad. Sin test es como dibuja Blade el
+// cielo (geometria pegada a la camara vista por los huecos); con ALWAYS, la
+// geometria del nivel; lo demas (LESS_EQUAL) son las entidades.
+struct DepthClass {
+    bool testDisabled;
+    bool always;
+};
+
+static DepthClass ClassifyDepth(ID3D11DeviceContext* ctx) {
+    DepthClass r{false, false};
     ID3D11DepthStencilState* dss = nullptr;
     UINT ref = 0;
     ctx->OMGetDepthStencilState(&dss, &ref);
-    if (!dss) return false;
+    if (!dss) return r;           // estado por defecto: depth LESS
     D3D11_DEPTH_STENCIL_DESC d{};
     dss->GetDesc(&d);
     dss->Release();
-    return !d.DepthEnable;
+    r.testDisabled = !d.DepthEnable;
+    r.always = d.DepthEnable && d.DepthFunc == D3D11_COMPARISON_ALWAYS;
+    return r;
 }
 
 // Los sprites del mundo (la llama de una antorcha, chispas) se dibujan
@@ -644,17 +702,26 @@ static bool UpdateEyeConstantBuffers(ID3D11DeviceContext* ctx, const float gameM
     return true;
 }
 
-static void MaybeLogRate() {
+// Una linea por minuto para los informes de fallos: fluidez y en que modo
+// se esta dibujando.
+static void MaybeLogSummary() {
     uint64_t now = GetTickCount64();
     uint64_t last = g_lastLogMs.load(std::memory_order_relaxed);
-    if (now - last < 5000) return;
+    if (last == 0) { g_lastLogMs.store(now, std::memory_order_relaxed); return; }
+    if (now - last < kSummaryPeriodMs) return;
     if (!g_lastLogMs.compare_exchange_strong(last, now)) return;
+    double seconds = static_cast<double>(now - last) / 1000.0;
+    double passAvgMs = 0.0, passMaxMs = 0.0;
+    SceneTakePassStats(&passAvgMs, &passMaxMs);
     std::ostringstream o;
-    o << "[STEREO] ultimos 5 s: draws 3D=" << g_draws3D.exchange(0)
-      << " draws 2D=" << g_draws2D.exchange(0)
-      << " composicion/post=" << g_drawsComposition.exchange(0)
-      << " destello omitido=" << g_drawsFlareSkipped.exchange(0)
-      << " fase plana=" << (StereoInFlatPhase() ? "si" : "no");
+    o.setf(std::ios::fixed);
+    o.precision(1);
+    o << "[ESTADO] ultimo minuto: fps=" << (static_cast<double>(g_framesInPeriod.exchange(0)) / seconds)
+      << " peor fotograma=" << (g_worstFrameTenths.exchange(0) / 10.0) << " ms"
+      << " fase plana=" << (StereoInFlatPhase() ? "si" : "no")
+      << " mundo por ojo=" << (SceneEyeModeActive() ? "si" : "no")
+      << " pasada del mundo media/max=" << passAvgMs << "/" << passMaxMs << " ms"
+      << " separacion=" << StereoGetEyeSeparationUnits();
     HookLogger::Instance().Line(o.str());
 }
 
@@ -733,6 +800,24 @@ static bool DrawUiIntoOverlayTexture(ID3D11DeviceContext* ctx, uint64_t frame, D
     return ok;
 }
 
+// Test de profundidad para los sprites del mundo: se comparan contra la
+// escena pero NO escriben, que es lo propio de algo translucido.
+static bool EnsureSpriteDepthState(ID3D11DeviceContext* ctx) {
+    if (g_spriteDss) return true;
+    ID3D11Device* device = nullptr;
+    ctx->GetDevice(&device);
+    if (!device) return false;
+    D3D11_DEPTH_STENCIL_DESC d{};
+    d.DepthEnable = TRUE;
+    d.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+    d.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
+    d.StencilEnable = FALSE;
+    bool ok = SUCCEEDED(device->CreateDepthStencilState(&d, &g_spriteDss)) && g_spriteDss;
+    device->Release();
+    if (!ok) HookLogger::Instance().Line("[STEREO] ERROR: no se pudo crear el estado de profundidad de los destellos.");
+    return ok;
+}
+
 // 'draw' es una lambda que llama a la funcion original con los argumentos
 // exactos del draw call.
 template <typename DrawFn>
@@ -758,19 +843,47 @@ static void EmitDraw(ID3D11DeviceContext* ctx, UINT vertexCount, DrawFn&& draw) 
 
     float gameMatrix[16];
     bool isPerspective = ProjectionGetBoundVSSlot0Matrix(gameMatrix);
+    // Draw de una pasada del mundo por ojo: el viewport es una de las mitades
+    // partidas y la geometria ya viene de la camara de ese ojo.
+    int eyeSplit = SceneEyeForViewport(vp.TopLeftX, vp.TopLeftY, vp.Width, vp.Height);
     if (!isPerspective) {
         // ---- draw 2D ----
         if (DrawSamplesRenderTarget(ctx)) {
             g_compositionFrame.store(frame, std::memory_order_relaxed);
-            g_drawsComposition.fetch_add(1, std::memory_order_relaxed);
             draw();
+            return;
+        }
+        if (eyeSplit >= 0) {
+            // Sprites proyectados en CPU dentro de la pasada de un ojo: el FOV
+            // del juego se coloca dentro del frustum del ojo, como siempre, pero
+            // solo en su mitad (el viewport completo se reconstruye).
+            D3D11_VIEWPORT full = vp;
+            full.TopLeftX = vp.TopLeftX - (eyeSplit == 1 ? vp.Width : 0.0f);
+            full.Width = vp.Width * 2.0f;
+            g_inReplay.store(true, std::memory_order_relaxed);
+            ID3D11RasterizerState* gameRs = nullptr;
+            ctx->RSGetState(&gameRs);
+            ID3D11RasterizerState* scissorRs = ScissorStateFor(gameRs);
+            UINT numRects = 1;
+            D3D11_RECT gameScissor{};
+            ctx->RSGetScissorRects(&numRects, &gameScissor);
+            if (scissorRs) ctx->RSSetState(scissorRs);
+            D3D11_RECT halfRect{};
+            D3D11_VIEWPORT eyeVp = SpriteViewport(full, eyeSplit, &halfRect);
+            ctx->RSSetScissorRects(1, &halfRect);
+            ctx->RSSetViewports(1, &eyeVp);
+            draw();
+            ctx->RSSetState(gameRs);
+            if (numRects > 0) ctx->RSSetScissorRects(1, &gameScissor);
+            if (gameRs) gameRs->Release();
+            ctx->RSSetViewports(1, &vp);
+            g_inReplay.store(false, std::memory_order_relaxed);
             return;
         }
         bool afterComposition = (g_compositionFrame.load(std::memory_order_relaxed) == frame);
         bool no3DYet = (g_last3DFrame.load(std::memory_order_relaxed) != frame);
         bool isUi = afterComposition || no3DYet;
         if (kHideSunFlare && afterComposition && CurrentRenderTargetFormat(ctx) == DXGI_FORMAT_R16G16B16A16_FLOAT) {
-            g_drawsFlareSkipped.fetch_add(1, std::memory_order_relaxed);
             return;
         }
         // Tambien en el PRIMER fotograma de un menu a pantalla completa (la
@@ -782,7 +895,6 @@ static void EmitDraw(ID3D11DeviceContext* ctx, UINT vertexCount, DrawFn&& draw) 
                          g_framePanelSeen.load(std::memory_order_relaxed);
         if (isUi && toOverlay && DrawUiIntoOverlayTexture(ctx, frame, draw)) {
             g_frameUiRedirected.store(true, std::memory_order_relaxed);
-            g_draws2D.fetch_add(1, std::memory_order_relaxed);
             return;
         }
 
@@ -807,7 +919,6 @@ static void EmitDraw(ID3D11DeviceContext* ctx, UINT vertexCount, DrawFn&& draw) 
         if (gameRs) gameRs->Release();
         ctx->RSSetViewports(1, &vp);
         g_inReplay.store(false, std::memory_order_relaxed);
-        g_draws2D.fetch_add(1, std::memory_order_relaxed);
         return;
     }
 
@@ -815,27 +926,72 @@ static void EmitDraw(ID3D11DeviceContext* ctx, UINT vertexCount, DrawFn&& draw) 
     if (!EnsureEyeConstantBuffers() || !UpdateEyeConstantBuffers(ctx, gameMatrix)) { draw(); return; }
 
     g_last3DFrame.store(frame, std::memory_order_relaxed);
-    bool depthOff = DepthTestDisabled(ctx);
+    DepthClass depth = ClassifyDepth(ctx);
+    bool depthOff = depth.testDisabled;
     bool worldSprite = depthOff && LooksLikeWorldSprite(ctx, vertexCount);
     bool noEye = depthOff && !worldSprite;          // cielo: al infinito
     ID3D11Buffer* gameCb = ProjectionGetBoundVSSlot0Buffer();
+
+    // El DSV de la escena: el que hay enlazado mientras se dibuja el nivel.
+    // Se guarda una vez por fotograma para devolverselo a los sprites.
+    if (depth.always && g_sceneDsvFrame != frame) {
+        ID3D11RenderTargetView* sceneRtv = nullptr;
+        ID3D11DepthStencilView* sceneDsv = nullptr;
+        ctx->OMGetRenderTargets(1, &sceneRtv, &sceneDsv);
+        if (sceneRtv) sceneRtv->Release();
+        if (sceneDsv) {
+            g_sceneDsvFrame = frame;
+            if (g_sceneDsv) g_sceneDsv->Release();
+            g_sceneDsv = sceneDsv;          // se queda con la referencia
+        }
+    }
+
+    // Destellos y chispas: test de profundidad contra la escena, sin escritura.
+    ID3D11DepthStencilState* oldSpriteDss = nullptr;
+    UINT oldSpriteRef = 0;
+    bool spriteDepth = worldSprite && EnsureSpriteDepthState(ctx);
+    ID3D11RenderTargetView* spriteRtv = nullptr;
+    bool spriteReboundDsv = false;
+    if (spriteDepth) {
+        ID3D11DepthStencilView* boundDsv = nullptr;
+        ctx->OMGetRenderTargets(1, &spriteRtv, &boundDsv);
+        if (!boundDsv && spriteRtv && g_sceneDsv) {
+            ctx->OMSetRenderTargets(1, &spriteRtv, g_sceneDsv);
+            spriteReboundDsv = true;
+        }
+        if (boundDsv) boundDsv->Release();
+        if (!spriteReboundDsv && spriteRtv) { spriteRtv->Release(); spriteRtv = nullptr; }
+        ctx->OMGetDepthStencilState(&oldSpriteDss, &oldSpriteRef);
+        ctx->OMSetDepthStencilState(g_spriteDss, 0);
+    }
+
     g_inReplay.store(true, std::memory_order_relaxed);
+    if (eyeSplit >= 0) {
+        // Pasada del mundo de un ojo: solo falta su frustum, sin
+        // desplazamiento (m[12] = 0). El viewport de la mitad ya lo ha
+        // puesto bgfx.
+        ProjectionBindVSSlot0Raw(ctx, eyeSplit == 0 ? g_cbLeftNoEye : g_cbRightNoEye);
+        draw();
+    } else {
+        D3D11_VIEWPORT eyeVp = EyeHalfViewport(vp, 0);
+        ProjectionBindVSSlot0Raw(ctx, noEye ? g_cbLeftNoEye : g_cbLeft);
+        ctx->RSSetViewports(1, &eyeVp);
+        draw();
 
-    D3D11_VIEWPORT eyeVp = EyeHalfViewport(vp, 0);
-    ProjectionBindVSSlot0Raw(ctx, noEye ? g_cbLeftNoEye : g_cbLeft);
-    ctx->RSSetViewports(1, &eyeVp);
-    draw();
-
-    eyeVp = EyeHalfViewport(vp, 1);
-    ProjectionBindVSSlot0Raw(ctx, noEye ? g_cbRightNoEye : g_cbRight);
-    ctx->RSSetViewports(1, &eyeVp);
-    draw();
-
-    ctx->RSSetViewports(1, &vp);
+        eyeVp = EyeHalfViewport(vp, 1);
+        ProjectionBindVSSlot0Raw(ctx, noEye ? g_cbRightNoEye : g_cbRight);
+        ctx->RSSetViewports(1, &eyeVp);
+        draw();
+        ctx->RSSetViewports(1, &vp);
+    }
     ProjectionBindVSSlot0Raw(ctx, gameCb);
+    if (spriteDepth) {
+        ctx->OMSetDepthStencilState(oldSpriteDss, oldSpriteRef);
+        if (oldSpriteDss) oldSpriteDss->Release();
+        if (spriteReboundDsv) ctx->OMSetRenderTargets(1, &spriteRtv, nullptr);
+        if (spriteRtv) spriteRtv->Release();
+    }
     g_inReplay.store(false, std::memory_order_relaxed);
-    g_draws3D.fetch_add(1, std::memory_order_relaxed);
-    MaybeLogRate();
 }
 
 static void STDMETHODCALLTYPE HookedDrawIndexed(ID3D11DeviceContext* self, UINT IndexCount,
@@ -871,6 +1027,8 @@ bool InstallStereoHook(ID3D11DeviceContext* context) {
 void UninstallStereoHook() {
     // Los hooks se deshabilitan en bloque en UninstallDx11Hook.
     g_installed = false;
+    if (g_spriteDss) { g_spriteDss->Release(); g_spriteDss = nullptr; }
+    if (g_sceneDsv) { g_sceneDsv->Release(); g_sceneDsv = nullptr; }
     if (g_uiOverlayRtv) { g_uiOverlayRtv->Release(); g_uiOverlayRtv = nullptr; }
     if (g_uiOverlayTex) { g_uiOverlayTex->Release(); g_uiOverlayTex = nullptr; }
 }

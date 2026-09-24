@@ -17,14 +17,18 @@
 //   Dx11Hook              Present/ResizeBuffers/CreateSwapChain; copia del
 //                         backbuffer (lado a lado) y entrega a SteamVR.
 //   ProjectionHook        captura de la matriz de proyeccion (VS slot 0).
-//   StereoHook            estereo por viewport partido: cada draw 3D se
-//                         emite dos veces, una por ojo. Teclas de estereo.
+//   StereoHook            estereo lado a lado: los draws del mundo (ya
+//                         dibujado por ojo) van a su mitad con el frustum de
+//                         su ojo; el resto de draws 3D se emite dos veces.
+//                         Fase plana, interfaz anclada, teclas.
 //   OpenVRHook            SteamVR: poses, frustums por ojo, Submit.
 //   HeadTrackHook         seguimiento de cabeza 6DOF: reescritura de la
 //                         matriz de vista del juego (fromWorld) con la pose
 //                         del visor, con colision contra el nivel.
-//   SceneCullingRootHook  mantiene el culling del juego coherente con la
-//                         vista reescrita (sombras en todas direcciones).
+//   SceneCullingRootHook  dibuja el mundo dos veces por fotograma, una desde
+//                         cada ojo (recorte por portales, sombras y reflejos
+//                         propios de cada ojo), y mantiene el culling
+//                         coherente con la vista reescrita.
 //   FovHook               FOV minimo: las camaras de seleccion de personaje
 //                         y cinematicas piden FOVs estrechos (recuadro negro
 //                         en el visor).
@@ -40,7 +44,7 @@ static DWORD WINAPI InstallThreadProc(LPVOID) {
     DWORD pid = GetCurrentProcessId();
     auto& log = BladeVR::HookLogger::Instance();
     log.Init(pid);
-    log.Line("[BOOT] BladeVR.dll cargado en PID " + std::to_string(pid));
+    log.Line(std::string("[BOOT] BladeVR ") + BladeVR::kBladeVRVersion + " cargado en PID " + std::to_string(pid));
 
     bool dx11Ok = BladeVR::InstallDx11Hook();
     log.Line(dx11Ok ? "[BOOT] Hooks DX11 instalados." : "[BOOT] Hooks DX11 NO pudieron instalarse.");
