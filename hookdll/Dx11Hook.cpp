@@ -5,6 +5,8 @@
 #include "OpenVRHook.h"
 #include "HeadTrackHook.h"
 #include "FovHook.h"
+#include "DioramaHook.h"
+#include "DioramaGpuLevel.h"
 #include <windows.h>
 #include <d3d11.h>
 #include <dxgi1_2.h>
@@ -275,6 +277,12 @@ static void SubmitFrameToVR() {
     bool mono = false;
     float renderPose[12];
     const float* posePtr = (!mono && HeadTrackGetRenderPose(renderPose)) ? renderPose : nullptr;
+    // Solo con el diorama y el nivel en la GPU: la pose del visor con la que
+    // se calculo la maqueta de la imagen que se presenta (la ultima puede ser
+    // ya la del fotograma siguiente del juego); el compositor la reproyecta
+    // desde donde de verdad se dibujo. Fuera del diorama, como siempre.
+    float framePose[12];
+    if (posePtr && DioramaDrawActive() && GpuLevelFramePose(framePose)) posePtr = framePose;
     // Fase plana para este fotograma si se dibujo plano, o si es el de
     // transicion (dibujado en estereo pero el siguiente ya sera plano: se
     // muestra su mitad izquierda para que el menu no aparezca un instante

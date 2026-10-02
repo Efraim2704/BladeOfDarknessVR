@@ -3,6 +3,7 @@
 #include "FovHook.h"
 #include "StereoHook.h"
 #include "HookLogger.h"
+#include "DioramaHook.h"
 #include <windows.h>
 #include <MinHook.h>
 #include <intrin.h>
@@ -395,15 +396,23 @@ static void __fastcall HookedSceneCullingRoot(long long param_1, long long param
     StereoNotifyCullingPass();
     HeadTrackSyncCullingCamera(param_2);
 
-    bool eyeMode = g_flushHookInstalled && !StereoInFlatPhase();
+    // Modo diorama (F5): el mapa entero como maqueta, visto desde la cabeza
+    // del jugador llevada al mundo del juego (DioramaHook.cpp). Se dibuja UNA
+    // vez, desde el centro de la cabeza, y StereoHook emite cada draw dos
+    // veces con el desplazamiento de cada ojo: las pasadas por ojo solo hacen
+    // falta por el recorte de portales, que la maqueta no usa, y con el mapa
+    // entero costaban el doble de CPU (15-20 ms por pasada).
+    bool diorama = !StereoInFlatPhase() && DioramaEnabled() && HeadTrackDioramaCameraActive();
+    bool eyeMode = g_flushHookInstalled && !StereoInFlatPhase() && !diorama;
     EyeSaved saved{};
     if (eyeMode) eyeMode = SaveEyeBlock(param_2, &saved) && ConfigureEyeViews();
     if (!eyeMode && g_remapInstalled) RestoreViewOrder();
     if (eyeMode != g_loggedEyeMode) {
         g_loggedEyeMode = eyeMode;
         HookLogger::Instance().Line(eyeMode ? "[ESCENA] mundo dibujado desde cada ojo."
-                                            : "[ESCENA] mundo dibujado una vez (fase plana).");
+                                            : "[ESCENA] mundo dibujado una vez (fase plana o maqueta).");
     }
+    DioramaBeginWorld(diorama, param_2, param_3);
 
     LARGE_INTEGER t0, t1;
     if (eyeMode) {
@@ -433,6 +442,7 @@ static void __fastcall HookedSceneCullingRoot(long long param_1, long long param
         NotePass(t0.QuadPart, t1.QuadPart);
     }
 
+    DioramaEndWorld();
     HeadTrackRestoreCullingCamera(param_2);
 }
 

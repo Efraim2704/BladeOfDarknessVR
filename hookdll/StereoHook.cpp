@@ -5,6 +5,8 @@
 #include "OpenVRHook.h"
 #include "HeadTrackHook.h"
 #include "SceneCullingRootHook.h"
+#include "DioramaHook.h"
+#include "DioramaGpuLevel.h"
 #include <windows.h>
 #include <d3d11.h>
 #include <MinHook.h>
@@ -117,6 +119,12 @@ static uint64_t g_sceneDsvFrame = 0;
 // (Bladex.GetTime, mundo+0x20c0): en las cinematicas se para medio segundo
 // si y medio no, y en las cargas avanza a ratos.
 static constexpr uint32_t kScene3DDrawsMin = 8;
+// En diorama (F5) la maqueta puede dejar muy pocos draws 3D (con la maqueta
+// pequena o fuera de la vista): con el umbral de arriba pasaria a fase plana
+// y se veria todo negro con el HUD. En diorama cuenta como escena que el
+// juego haya hecho una pasada del mundo en los ultimos Presents.
+static constexpr int kDioramaSceneGraceLatches = 3;
+static int g_latchesWithoutWorldPass = 1000;           // solo hilo de render
 // Los fondos son un unico cuadrilatero (<= 6 vertices) con una textura no
 // cuadrada que no es render target; el HUD usa atlas cuadrados (1024x1024,
 // 512x512) o texturas pequenas (128x64, 256x64).
@@ -160,6 +168,7 @@ static ID3D11Texture2D* g_uiOverlayTex = nullptr;      // solo hilo de render
 static ID3D11RenderTargetView* g_uiOverlayRtv = nullptr;
 static uint64_t g_uiOverlayClearedFrame = ~0ull;
 static std::atomic<uint32_t> g_frame3DDraws{0};
+static std::atomic<uint32_t> g_frameWorldPasses{0};    // pasadas del mundo desde el ultimo Present
 static std::atomic<bool> g_frameFullMaskSeen{false};   // mascara de menu a pantalla completa, fotograma en curso
 static std::atomic<bool> g_framePanelSeen{false};      // panel ancho sobre el juego, fotograma en curso
 static std::atomic<bool> g_frameWideBgSeen{false};     // cualquier fondo ancho, fotograma en curso
@@ -179,6 +188,19 @@ static float g_cbSourceMatrix[16] = {};
 static float g_cbSourceSeparation = -1.0f;
 static bool g_cbSourceHadHmd = false;   // OpenVR disponible cuando se rellenaron
 static bool g_cbFilled = false;
+// Matrices de cada ojo (las de g_cbLeft/g_cbRight) para el nivel del
+// diorama en la GPU, y fotograma en el que ya se dibujo.
+static float g_eyeProj[2][16] = {};
+static uint64_t g_gpuLevelFrame = ~0ull;
+// Destino del nivel en la GPU (render target y profundidad de la pasada del
+// mundo) del ultimo fotograma en que se dibujo: si en un fotograma el juego
+// no manda ningun draw 3D con profundidad (maqueta fuera de la vista: al
+// mirar hacia otro lado o con la cabeza lejos), el cielo y el nivel se
+// dibujan ahi antes de la composicion.
+static ID3D11RenderTargetView* g_gpuSceneRtv = nullptr;
+static ID3D11DepthStencilView* g_gpuSceneDsv = nullptr;
+static D3D11_VIEWPORT g_gpuSceneVp = {};
+static ID3D11Resource* g_gpuSceneTex = nullptr;   // su textura (solo para comparar; sin referencia propia)
 
 // Frustum de cada ojo del visor (tangentes crudos de OpenVR).
 struct EyeFrustum {
@@ -218,6 +240,7 @@ bool StereoInFlatPhase() { return g_flatLatched.load(std::memory_order_relaxed);
 bool StereoFrameWasFlat() { return g_flatPrev.load(std::memory_order_relaxed); }
 void StereoNotifyCameraPose() { g_cullsSinceCameraPose.store(0, std::memory_order_relaxed); }
 void StereoNotifyCullingPass() {
+    g_frameWorldPasses.fetch_add(1, std::memory_order_relaxed);
     int n = g_cullsSinceCameraPose.load(std::memory_order_relaxed);
     if (n < 1000) g_cullsSinceCameraPose.store(n + 1, std::memory_order_relaxed);
 }
@@ -234,7 +257,11 @@ static void LatchFlatPhase() {
     bool wideBg = g_frameWideBgSeen.exchange(false, std::memory_order_relaxed);
     bool logicStopped = g_cullsSinceCameraPose.load(std::memory_order_relaxed) >= kFlatAfterCulls;
     bool redirected = g_frameUiRedirected.exchange(false, std::memory_order_relaxed);
-    bool scene = draws3D >= kScene3DDrawsMin;
+    uint32_t worldPasses = g_frameWorldPasses.exchange(0, std::memory_order_relaxed);
+    if (worldPasses) g_latchesWithoutWorldPass = 0;
+    else if (g_latchesWithoutWorldPass < 1000) ++g_latchesWithoutWorldPass;
+    bool dioramaScene = DioramaEnabled() && g_latchesWithoutWorldPass <= kDioramaSceneGraceLatches;
+    bool scene = draws3D >= kScene3DDrawsMin || dioramaScene;
     if (!scene) {
         ++g_noSceneFrames;
     } else {
@@ -265,7 +292,8 @@ static void LatchFlatPhase() {
     if (g_flatLatched.exchange(flat, std::memory_order_relaxed) != flat) {
         std::ostringstream o;
         o << "[STEREO] Fase plana: " << (flat ? "activada" : "terminada (estereo 3D)")
-          << " (draws 3D=" << draws3D << (fullMask ? ", mascara a pantalla completa" : "")
+          << " (draws 3D=" << draws3D << (dioramaScene ? ", maqueta" : "")
+          << (fullMask ? ", mascara a pantalla completa" : "")
           << (panel ? ", panel" : "") << (wideBg ? ", fondo ancho" : "")
           << (logicStopped ? ", logica parada" : ", logica viva") << ")";
         HookLogger::Instance().Line(o.str());
@@ -346,9 +374,11 @@ void StereoEndFrame() {
 }
 
 void StereoPollKeys() {
+    DioramaPollKeys();   // F5, F6 y, en diorama, Re Pag / Av Pag (escala de la maqueta)
     float delta = 0.0f;
     if (KeyPressedOnce(VK_PRIOR, g_pgUpWasDown)) delta += kEyeSeparationStep;   // Re Pag
     if (KeyPressedOnce(VK_NEXT, g_pgDnWasDown)) delta -= kEyeSeparationStep;    // Av Pag
+    if (DioramaEnabled()) delta = 0.0f;   // en diorama cambian la escala, no la separacion
     if (delta != 0.0f) {
         float v = g_eyeSeparationUnits.load(std::memory_order_relaxed) + delta;
         if (v < 0.0f) v = 0.0f;
@@ -661,8 +691,23 @@ static void FillEyeMatrix(float* dst, const float* src, float dx, int eye) {
     dst[12] = -dx * dst[0];
 }
 
+// Proyeccion sin plano lejano (D3D, profundidad 0..1, w = z): con
+// P22 = f/(f-n) y P32 = -n f/(f-n), n = -P32/P22; al infinito P22 = 1,
+// P32 = -n. Si la matriz no tiene esa forma no se toca.
+static void MakeFarInfinite(float* m) {
+    float p22 = m[10], p32 = m[14];
+    if (!(p22 > 0.5f) || !(p32 < 0.0f) || m[11] != 1.0f) return;
+    float n = -p32 / p22;
+    m[10] = 1.0f;
+    m[14] = -n;
+}
+
 static bool UpdateEyeConstantBuffers(ID3D11DeviceContext* ctx, const float gameMatrix[16]) {
     float separation = StereoGetEyeSeparationUnits();
+    // En diorama el mundo se dibuja una vez y cada draw se duplica aqui: la
+    // separacion entre ojos va multiplicada por la escala de la maqueta.
+    bool diorama = DioramaDrawActive();
+    if (diorama) separation *= static_cast<float>(DioramaScale());
     // OpenVR se inicializa de forma asincrona: cuando pase a estar disponible
     // hay que volver a pedir los frustums aunque la matriz no haya cambiado.
     bool hmdAvailable = IsOpenVRAvailable();
@@ -677,6 +722,16 @@ static bool UpdateEyeConstantBuffers(ID3D11DeviceContext* ctx, const float gameM
     FillEyeMatrix(right, gameMatrix, +half, 1);   // ojo derecho:   camara a +IPD/2
     FillEyeMatrix(leftNoEye, gameMatrix, 0.0f, 0);
     FillEyeMatrix(rightNoEye, gameMatrix, 0.0f, 1);
+    if (diorama) {
+        // Maqueta: sin plano lejano (con la cabeza lejos y la maqueta
+        // pequena la camara del juego queda a cientos de metros).
+        MakeFarInfinite(left);
+        MakeFarInfinite(right);
+        MakeFarInfinite(leftNoEye);
+        MakeFarInfinite(rightNoEye);
+    }
+    memcpy(g_eyeProj[0], left, 64);
+    memcpy(g_eyeProj[1], right, 64);
 
     D3D11_MAPPED_SUBRESOURCE mapped{};
     auto upload = [&](ID3D11Buffer* cb, const float* m) -> bool {
@@ -693,6 +748,7 @@ static bool UpdateEyeConstantBuffers(ID3D11DeviceContext* ctx, const float gameM
     g_cbSourceHadHmd = hmdAvailable;
     g_cbFilled = true;
 
+    if (diorama) return true;   // la escala cambia a cada momento con los mandos: sin log
     std::ostringstream o;
     o << "[STEREO] matrices de ojo actualizadas -- juego m00=" << gameMatrix[0] << " m11=" << gameMatrix[5]
       << " -> ojo m00=" << left[0] << " m8_izq=" << left[8] << " m8_der=" << right[8]
@@ -700,6 +756,190 @@ static bool UpdateEyeConstantBuffers(ID3D11DeviceContext* ctx, const float gameM
       << " separacion=" << separation << " visor=" << (g_eye[0].valid ? "si" : "no");
     HookLogger::Instance().Line(o.str());
     return true;
+}
+
+// ---------------------------------------------------------------------
+// Modo diorama: el nivel con prueba de profundidad (solo hilo de render)
+//
+// El nivel se dibuja con DepthFunc=ALWAYS: el motor confia en que el recorte
+// por portales impida los solapes. En diorama (DioramaHook.cpp) se dibujan
+// todos los sectores a la vez, vistos desde fuera y por los dos lados, asi
+// que tiene que decidir la profundidad: el nivel pasa a LESS_EQUAL y sin
+// descarte de caras en la GPU; sombras y calcomanias (sin escritura de
+// profundidad o con mezcla), lo mismo con un pequeno sesgo hacia la camara
+// para que no parpadeen contra su superficie.
+// ---------------------------------------------------------------------
+static constexpr int kDioramaStateMax = 64;
+static constexpr INT kDioramaDecalDepthBias = -16;
+static constexpr FLOAT kDioramaDecalSlopeBias = -1.0f;
+// Lotes del reflejo del agua (DioramaHook los marca con el descarte de
+// caras, que el juego nunca pone): un poco hacia el fondo, para que lo real
+// que queda en su mismo plano (bajo el agua, junto a la orilla) gane siempre
+// en vez de pelearse con el (linea punteada).
+static constexpr INT kDioramaMirrorDepthBias = 32;
+static constexpr FLOAT kDioramaMirrorSlopeBias = 2.0f;
+struct DioramaDssEntry {
+    ID3D11DepthStencilState* src;
+    D3D11_DEPTH_WRITE_MASK writeMask;
+    ID3D11DepthStencilState* dst;
+};
+struct DioramaRsEntry {
+    ID3D11RasterizerState* src;
+    bool decal;
+    bool mirror;
+    ID3D11RasterizerState* dst;
+};
+static DioramaDssEntry g_dioDss[kDioramaStateMax];
+static int g_dioDssCount = 0;
+static DioramaRsEntry g_dioRs[kDioramaStateMax];
+static int g_dioRsCount = 0;
+
+static ID3D11DepthStencilState* DioramaDss(ID3D11DepthStencilState* src, const D3D11_DEPTH_STENCIL_DESC& desc) {
+    for (int i = 0; i < g_dioDssCount; ++i) {
+        if (g_dioDss[i].src == src && g_dioDss[i].writeMask == desc.DepthWriteMask) return g_dioDss[i].dst;
+    }
+    if (g_dioDssCount >= kDioramaStateMax) return nullptr;
+    ID3D11Device* device = GetGameDevice();
+    if (!device) return nullptr;
+    D3D11_DEPTH_STENCIL_DESC d = desc;
+    d.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
+    ID3D11DepthStencilState* created = nullptr;
+    if (FAILED(device->CreateDepthStencilState(&d, &created)) || !created) return nullptr;
+    g_dioDss[g_dioDssCount].src = src;
+    g_dioDss[g_dioDssCount].writeMask = desc.DepthWriteMask;
+    g_dioDss[g_dioDssCount].dst = created;
+    ++g_dioDssCount;
+    return created;
+}
+
+static ID3D11RasterizerState* DioramaRs(ID3D11RasterizerState* src, bool decal, bool mirror) {
+    for (int i = 0; i < g_dioRsCount; ++i) {
+        if (g_dioRs[i].src == src && g_dioRs[i].decal == decal && g_dioRs[i].mirror == mirror) return g_dioRs[i].dst;
+    }
+    if (g_dioRsCount >= kDioramaStateMax) return nullptr;
+    ID3D11Device* device = GetGameDevice();
+    if (!device) return nullptr;
+    D3D11_RASTERIZER_DESC d{};
+    if (src) {
+        src->GetDesc(&d);
+    } else {
+        d.FillMode = D3D11_FILL_SOLID;
+        d.CullMode = D3D11_CULL_BACK;
+        d.DepthClipEnable = TRUE;
+    }
+    d.CullMode = D3D11_CULL_NONE;
+    if (decal || mirror) {
+        d.DepthBias = (decal ? kDioramaDecalDepthBias : 0) + (mirror ? kDioramaMirrorDepthBias : 0);
+        d.SlopeScaledDepthBias = (decal ? kDioramaDecalSlopeBias : 0.0f) + (mirror ? kDioramaMirrorSlopeBias : 0.0f);
+        d.DepthBiasClamp = 0.0f;
+    }
+    ID3D11RasterizerState* created = nullptr;
+    if (FAILED(device->CreateRasterizerState(&d, &created)) || !created) return nullptr;
+    g_dioRs[g_dioRsCount].src = src;
+    g_dioRs[g_dioRsCount].decal = decal;
+    g_dioRs[g_dioRsCount].mirror = mirror;
+    g_dioRs[g_dioRsCount].dst = created;
+    ++g_dioRsCount;
+    return created;
+}
+
+static bool DioramaBlendEnabled(ID3D11DeviceContext* ctx) {
+    ID3D11BlendState* bs = nullptr;
+    float factor[4] = {};
+    UINT mask = 0;
+    ctx->OMGetBlendState(&bs, factor, &mask);
+    if (!bs) return false;
+    D3D11_BLEND_DESC bd{};
+    bs->GetDesc(&bd);
+    bs->Release();
+    return bd.RenderTarget[0].BlendEnable != FALSE;
+}
+
+struct DioramaDepthState {
+    ID3D11DepthStencilState* oldDss = nullptr;
+    UINT oldRef = 0;
+    ID3D11RasterizerState* oldRs = nullptr;
+    bool dss = false;
+    bool rs = false;
+    bool active = false;
+};
+
+// Solo para los draws del nivel (ALWAYS) de las pasadas por ojo mientras el
+// mundo se dibuja como maqueta.
+static DioramaDepthState BeginDioramaDepth(ID3D11DeviceContext* ctx, const DepthClass& depth) {
+    DioramaDepthState st;
+    if (!depth.always || !DioramaDrawActive()) return st;
+    st.active = true;
+    ctx->OMGetDepthStencilState(&st.oldDss, &st.oldRef);
+    if (!st.oldDss) return st;
+    D3D11_DEPTH_STENCIL_DESC dd{};
+    st.oldDss->GetDesc(&dd);
+    ID3D11DepthStencilState* sub = DioramaDss(st.oldDss, dd);
+    if (sub) {
+        ctx->OMSetDepthStencilState(sub, st.oldRef);
+        st.dss = true;
+    }
+    bool decal = dd.DepthWriteMask == D3D11_DEPTH_WRITE_MASK_ZERO || DioramaBlendEnabled(ctx);
+    ctx->RSGetState(&st.oldRs);
+    // Reflejo del agua: el juego nunca descarta caras; con descarte es la
+    // marca de DioramaHook (kBgfxMirrorTag).
+    bool mirror = false;
+    if (st.oldRs) {
+        D3D11_RASTERIZER_DESC rd{};
+        st.oldRs->GetDesc(&rd);
+        mirror = rd.CullMode != D3D11_CULL_NONE;
+    }
+    ID3D11RasterizerState* rs = DioramaRs(st.oldRs, decal, mirror);
+    if (rs) {
+        ctx->RSSetState(rs);
+        st.rs = true;
+    }
+    return st;
+}
+
+// Lotes marcados por DioramaHook (BGFX_STATE_LINEAA = AntialiasedLineEnable
+// en D3D: sin efecto en triangulos): la lamina de agua en el cono o cruzando
+// un corte, y los objetos y caras del motor cerca de un corte, con el nivel
+// en la GPU. Se recortan por pixel (DioramaGpuLevel.cpp) o, si no se puede,
+// no se dibujan.
+
+// Lote del reflejo del agua dibujado desde un ojo (DioramaHook): el juego
+// nunca descarta caras; BGFX_STATE_CULL_CW sale en D3D11 como CULL_FRONT
+// (ojo izquierdo) y CULL_CCW como CULL_BACK (derecho). -1 si no lo es.
+static int DioramaMirrorEye(ID3D11DeviceContext* ctx) {
+    ID3D11RasterizerState* rs = nullptr;
+    ctx->RSGetState(&rs);
+    if (!rs) return -1;
+    D3D11_RASTERIZER_DESC d{};
+    rs->GetDesc(&d);
+    rs->Release();
+    if (d.CullMode == D3D11_CULL_FRONT) return 0;
+    if (d.CullMode == D3D11_CULL_BACK) return 1;
+    return -1;
+}
+
+// Lote marcado por DioramaHook (AntialiasedLineEnable): 0 no, 1 agua (o su
+// reflejo), 2 objeto o cara del motor recortados por pixel (ademas
+// MultisampleEnable, que el juego nunca pone).
+static int DioramaWaterTagged(ID3D11DeviceContext* ctx) {
+    ID3D11RasterizerState* rs = nullptr;
+    ctx->RSGetState(&rs);
+    if (!rs) return 0;
+    D3D11_RASTERIZER_DESC d{};
+    rs->GetDesc(&d);
+    rs->Release();
+    if (d.AntialiasedLineEnable == FALSE) return 0;
+    return d.MultisampleEnable != FALSE ? 2 : 1;
+}
+
+static void EndDioramaDepth(ID3D11DeviceContext* ctx, DioramaDepthState& st) {
+    if (!st.active) return;
+    if (st.dss) ctx->OMSetDepthStencilState(st.oldDss, st.oldRef);
+    if (st.rs) ctx->RSSetState(st.oldRs);   // nullptr restaura el estado por defecto
+    if (st.oldDss) st.oldDss->Release();
+    if (st.oldRs) st.oldRs->Release();
+    st.oldDss = nullptr;
+    st.oldRs = nullptr;
 }
 
 // Una linea por minuto para los informes de fallos: fluidez y en que modo
@@ -721,7 +961,8 @@ static void MaybeLogSummary() {
       << " fase plana=" << (StereoInFlatPhase() ? "si" : "no")
       << " mundo por ojo=" << (SceneEyeModeActive() ? "si" : "no")
       << " pasada del mundo media/max=" << passAvgMs << "/" << passMaxMs << " ms"
-      << " separacion=" << StereoGetEyeSeparationUnits();
+      << " separacion=" << StereoGetEyeSeparationUnits()
+      << " diorama=" << (DioramaDrawActive() ? "si" : "no");
     HookLogger::Instance().Line(o.str());
 }
 
@@ -818,6 +1059,72 @@ static bool EnsureSpriteDepthState(ID3D11DeviceContext* ctx) {
     return ok;
 }
 
+static void RememberGpuLevelTarget(ID3D11DeviceContext* ctx, const D3D11_VIEWPORT& vp) {
+    ID3D11RenderTargetView* rtv = nullptr;
+    ID3D11DepthStencilView* dsv = nullptr;
+    ctx->OMGetRenderTargets(1, &rtv, &dsv);
+    if (!rtv || !dsv) {
+        if (rtv) rtv->Release();
+        if (dsv) dsv->Release();
+        return;
+    }
+    if (g_gpuSceneRtv) g_gpuSceneRtv->Release();
+    if (g_gpuSceneDsv) g_gpuSceneDsv->Release();
+    g_gpuSceneRtv = rtv;      // se queda con las referencias
+    g_gpuSceneDsv = dsv;
+    g_gpuSceneVp = vp;
+    ID3D11Resource* res = nullptr;
+    rtv->GetResource(&res);
+    g_gpuSceneTex = res;      // vive mientras vive la vista (que tenemos)
+    if (res) res->Release();
+}
+
+// Primer draw de composicion de un fotograma de la maqueta en el que el nivel
+// en la GPU no se ha dibujado: cielo y nivel en el destino de la pasada del
+// mundo (con la profundidad borrada: el juego no ha dibujado nada con ella).
+static void GpuLevelFallback(ID3D11DeviceContext* ctx, uint64_t frame) {
+    if (!DioramaDrawActive() || g_gpuLevelFrame == frame) return;
+    if (!g_gpuSceneRtv || !g_gpuSceneDsv) return;
+    // La composicion tiene la imagen del mundo enlazada como textura: al
+    // ponerla de destino D3D11 la desenlaza; se guardan y se devuelven.
+    constexpr UINT kSavedSrvs = 16;
+    ID3D11ShaderResourceView* oldSrv[kSavedSrvs] = {};
+    ctx->PSGetShaderResources(0, kSavedSrvs, oldSrv);
+    // Solo en la composicion que lee la imagen del mundo.
+    bool readsScene = false;
+    for (ID3D11ShaderResourceView* s : oldSrv) {
+        if (!s || readsScene) continue;
+        ID3D11Resource* r = nullptr;
+        s->GetResource(&r);
+        if (r) {
+            readsScene = r == g_gpuSceneTex;
+            r->Release();
+        }
+    }
+    if (!readsScene || !g_gpuSceneTex) {
+        for (ID3D11ShaderResourceView* s : oldSrv) if (s) s->Release();
+        return;
+    }
+    ID3D11RenderTargetView* oldRtv[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT] = {};
+    ID3D11DepthStencilView* oldDsv = nullptr;
+    ctx->OMGetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, oldRtv, &oldDsv);
+    UINT numVp = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
+    D3D11_VIEWPORT oldVp[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE] = {};
+    ctx->RSGetViewports(&numVp, oldVp);
+    ctx->OMSetRenderTargets(1, &g_gpuSceneRtv, g_gpuSceneDsv);
+    ctx->ClearDepthStencilView(g_gpuSceneDsv, D3D11_CLEAR_DEPTH, 1.0f, 0);
+    ctx->RSSetViewports(1, &g_gpuSceneVp);
+    g_inReplay.store(true, std::memory_order_relaxed);
+    if (GpuLevelDraw(ctx, g_gpuSceneVp, g_eyeProj)) g_gpuLevelFrame = frame;
+    g_inReplay.store(false, std::memory_order_relaxed);
+    ctx->OMSetRenderTargets(D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, oldRtv, oldDsv);
+    ctx->PSSetShaderResources(0, kSavedSrvs, oldSrv);
+    if (numVp) ctx->RSSetViewports(numVp, oldVp);
+    for (ID3D11RenderTargetView* r : oldRtv) if (r) r->Release();
+    if (oldDsv) oldDsv->Release();
+    for (ID3D11ShaderResourceView* s : oldSrv) if (s) s->Release();
+}
+
 // 'draw' es una lambda que llama a la funcion original con los argumentos
 // exactos del draw call.
 template <typename DrawFn>
@@ -850,6 +1157,7 @@ static void EmitDraw(ID3D11DeviceContext* ctx, UINT vertexCount, DrawFn&& draw) 
         // ---- draw 2D ----
         if (DrawSamplesRenderTarget(ctx)) {
             g_compositionFrame.store(frame, std::memory_order_relaxed);
+            GpuLevelFallback(ctx, frame);
             draw();
             return;
         }
@@ -970,19 +1278,74 @@ static void EmitDraw(ID3D11DeviceContext* ctx, UINT vertexCount, DrawFn&& draw) 
         // Pasada del mundo de un ojo: solo falta su frustum, sin
         // desplazamiento (m[12] = 0). El viewport de la mitad ya lo ha
         // puesto bgfx.
+        DioramaDepthState dio = BeginDioramaDepth(ctx, depth);
         ProjectionBindVSSlot0Raw(ctx, eyeSplit == 0 ? g_cbLeftNoEye : g_cbRightNoEye);
         draw();
+        EndDioramaDepth(ctx, dio);
     } else {
-        D3D11_VIEWPORT eyeVp = EyeHalfViewport(vp, 0);
-        ProjectionBindVSSlot0Raw(ctx, noEye ? g_cbLeftNoEye : g_cbLeft);
-        ctx->RSSetViewports(1, &eyeVp);
-        draw();
+        // Nivel del diorama en la GPU (DioramaGpuLevel.cpp): una vez por
+        // fotograma, antes del primer draw con profundidad de la maqueta.
+        if (DioramaDrawActive() && !depthOff && g_gpuLevelFrame != frame) {
+            if (GpuLevelDraw(ctx, vp, g_eyeProj)) {
+                g_gpuLevelFrame = frame;
+                RememberGpuLevelTarget(ctx, vp);
+            }
+        }
+        // Tambien la maqueta (una pasada, duplicada aqui por ojo). Lotes
+        // marcados: recortados por pixel (DioramaGpuLevel.cpp) o, si no se
+        // puede, fuera enteros.
+        int tag = DioramaDrawActive() ? DioramaWaterTagged(ctx) : 0;
+        int mirrorEye = DioramaDrawActive() ? DioramaMirrorEye(ctx) : -1;
+        bool waterTagged = tag != 0;
+        bool waterClip = waterTagged && GpuLevelWaterClipBegin(ctx, tag == 1);
+        bool waterHide = waterTagged && !waterClip;
+        if (waterHide) {
+            // Lote marcado que no se puede recortar: no se dibuja.
+        } else if (mirrorEye >= 0) {
+            // Reflejo dibujado desde este ojo: solo en su mitad, con su
+            // proyeccion sin desplazamiento (la camara del motor ya estaba en
+            // el ojo), sin descarte de caras y un poco hacia el fondo.
+            DioramaDepthState dio = BeginDioramaDepth(ctx, depth);
+            ID3D11RasterizerState* oldRs = nullptr;
+            bool rsSet = false;
+            if (!dio.rs) {
+                ctx->RSGetState(&oldRs);
+                ID3D11RasterizerState* rs = DioramaRs(oldRs, false, true);
+                if (rs) {
+                    ctx->RSSetState(rs);
+                    rsSet = true;
+                }
+            }
+            D3D11_VIEWPORT eyeVp = EyeHalfViewport(vp, mirrorEye);
+            ProjectionBindVSSlot0Raw(ctx, mirrorEye == 0 ? g_cbLeftNoEye : g_cbRightNoEye);
+            ctx->RSSetViewports(1, &eyeVp);
+            // El recorte por pixel reconstruye el punto con la proyeccion del
+            // ojo con desplazamiento: da el mismo pixel y el punto en la camara
+            // del centro, que es donde estan los planos.
+            if (waterClip) GpuLevelWaterClipEye(ctx, mirrorEye, eyeVp, g_eyeProj[mirrorEye]);
+            draw();
+            ctx->RSSetViewports(1, &vp);
+            if (waterClip) GpuLevelWaterClipEnd(ctx);
+            if (rsSet) ctx->RSSetState(oldRs);
+            if (oldRs) oldRs->Release();
+            EndDioramaDepth(ctx, dio);
+        } else {
+            DioramaDepthState dio = BeginDioramaDepth(ctx, depth);
+            D3D11_VIEWPORT eyeVp = EyeHalfViewport(vp, 0);
+            ProjectionBindVSSlot0Raw(ctx, noEye ? g_cbLeftNoEye : g_cbLeft);
+            ctx->RSSetViewports(1, &eyeVp);
+            if (waterClip) GpuLevelWaterClipEye(ctx, 0, eyeVp, g_eyeProj[0]);
+            draw();
 
-        eyeVp = EyeHalfViewport(vp, 1);
-        ProjectionBindVSSlot0Raw(ctx, noEye ? g_cbRightNoEye : g_cbRight);
-        ctx->RSSetViewports(1, &eyeVp);
-        draw();
-        ctx->RSSetViewports(1, &vp);
+            eyeVp = EyeHalfViewport(vp, 1);
+            ProjectionBindVSSlot0Raw(ctx, noEye ? g_cbRightNoEye : g_cbRight);
+            ctx->RSSetViewports(1, &eyeVp);
+            if (waterClip) GpuLevelWaterClipEye(ctx, 1, eyeVp, g_eyeProj[1]);
+            draw();
+            ctx->RSSetViewports(1, &vp);
+            if (waterClip) GpuLevelWaterClipEnd(ctx);
+            EndDioramaDepth(ctx, dio);
+        }
     }
     ProjectionBindVSSlot0Raw(ctx, gameCb);
     if (spriteDepth) {
@@ -1029,6 +1392,9 @@ void UninstallStereoHook() {
     g_installed = false;
     if (g_spriteDss) { g_spriteDss->Release(); g_spriteDss = nullptr; }
     if (g_sceneDsv) { g_sceneDsv->Release(); g_sceneDsv = nullptr; }
+    if (g_gpuSceneRtv) { g_gpuSceneRtv->Release(); g_gpuSceneRtv = nullptr; }
+    g_gpuSceneTex = nullptr;
+    if (g_gpuSceneDsv) { g_gpuSceneDsv->Release(); g_gpuSceneDsv = nullptr; }
     if (g_uiOverlayRtv) { g_uiOverlayRtv->Release(); g_uiOverlayRtv = nullptr; }
     if (g_uiOverlayTex) { g_uiOverlayTex->Release(); g_uiOverlayTex = nullptr; }
 }

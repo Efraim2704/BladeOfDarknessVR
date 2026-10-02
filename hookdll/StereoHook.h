@@ -45,7 +45,8 @@ float StereoGetEyeSeparationUnits();
 // Tamano de la pantalla virtual de la interfaz: 0, 1 (por defecto) o 2 (Fin).
 int StereoGetUiSizePreset();
 
-// Llamar una vez por Present: teclas Re Pag / Av Pag / Fin.
+// Llamar una vez por Present: teclas Re Pag / Av Pag / Fin (y las del modo
+// diorama, DioramaPollKeys).
 void StereoPollKeys();
 
 

@@ -7,6 +7,7 @@
 #include "SceneCullingRootHook.h"
 #include "HeadTrackHook.h"
 #include "FovHook.h"
+#include "DioramaHook.h"
 
 // ---------------------------------------------------------------------
 // BladeVR.dll -- mod de realidad virtual para Severance: Blade of Darkness
@@ -32,6 +33,8 @@
 //   FovHook               FOV minimo: las camaras de seleccion de personaje
 //                         y cinematicas piden FOVs estrechos (recuadro negro
 //                         en el visor).
+//   DioramaHook           modo diorama (F5): el mapa entero como maqueta
+//                         delante del jugador, a escala y visto por fuera.
 //   FromWorldLocator      localiza la matriz de vista global en memoria.
 //   HookLogger            log en BladeVR_logs\ junto a Blade.exe.
 //
@@ -52,6 +55,10 @@ static DWORD WINAPI InstallThreadProc(LPVOID) {
     bool cullOk = BladeVR::InstallSceneCullingRootHook();
     log.Line(cullOk ? "[BOOT] Hook de la raiz de culling instalado."
                     : "[BOOT] Hook de la raiz de culling NO pudo instalarse.");
+
+    bool dioramaOk = BladeVR::InstallDioramaHooks();
+    log.Line(dioramaOk ? "[BOOT] Modo diorama instalado (F5)."
+                       : "[BOOT] Modo diorama NO pudo instalarse (ver [DIORAMA]).");
 
     bool fovOk = BladeVR::InstallFovHook();
     log.Line(fovOk ? "[BOOT] Hook de FOV minimo instalado." : "[BOOT] Hook de FOV minimo NO pudo instalarse.");

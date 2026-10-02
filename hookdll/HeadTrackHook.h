@@ -43,4 +43,11 @@ bool HeadTrackGetCenterYawRad(double* outYaw);
 // posicion y los angulos del juego (que el culling vio con el giro del visor).
 void HeadTrackRestoreCullingCamera(long long param_2);
 
+// true si la ultima reescritura de fromWorld fue la camara del modo diorama
+// (DioramaHook.cpp) y el seguimiento esta activo.
+bool HeadTrackDioramaCameraActive();
+// Recentrar la posicion en el siguiente fotograma, como Inicio (al salir del
+// diorama, para que la vista vuelva a los ojos del personaje).
+void HeadTrackRequestRecenter();
+
 } // namespace BladeVR

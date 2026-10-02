@@ -9,6 +9,10 @@ through SteamVR / OpenVR. Developed and tested with a Meta Quest 2 over SteamVR.
 The game files are not modified. The mod is a DLL that is loaded when `Blade.exe` starts
 (through a `dxgi.dll` proxy) and hooks DirectX 11 plus a handful of engine functions.
 
+**New in 1.6: [diorama mode](#diorama-mode).** With one key the whole level becomes a miniature
+model on a virtual table that you keep playing on. Grab, move, turn and scale it with the
+motion controllers or a gamepad, and cut it open to see inside.
+
 > **Disclaimer.** This mod was written entirely with the help of artificial
 > intelligence, directed, supervised and tested by its author over many stages and
 > iterations: every change was tried in the game and on the
@@ -30,15 +34,19 @@ The game files are not modified. The mod is a DLL that is loaded when `Blade.exe
   Windows mouse cursor is never moved.
 * The monitor shows the left eye centred (with black bars at the sides) instead of the
   split image; SteamVR's own "VR View" window is also available.
-* Played with **keyboard and mouse or a gamepad**, exactly as the original game. VR
-  controllers are not used.
+* **Diorama mode.** The whole level as a model on a table, with cuts, a view cone, three
+  model modes, cinematics and a mixed-reality background (see below).
+* Played with **keyboard and mouse or a gamepad**, exactly as the original game. VR motion
+  controllers are only used in diorama mode.
 * Works from the main menu; no injector or launcher needed.
 
 ## Requirements
 
 * Blade of Darkness (2021 remaster, Steam, 64-bit).
-* SteamVR and a compatible headset (tested with Quest 2 via Link / Air Link).
+* SteamVR and a compatible headset (tested with Quest 2 via Link / Air Link and Virtual Desktop).
 * Windows 10/11 x64.
+* Diorama mode with a gamepad: Steam Input (the game's default). Mixed reality: Virtual
+  Desktop (optional).
 
 ## Installation
 
@@ -51,6 +59,9 @@ usually `...\steamapps\common\Blade of Darkness\bin\bin`):
 
 Start SteamVR first, then the game. If SteamVR is not running or no headset is connected,
 the game runs normally without VR. To uninstall, delete the three files.
+
+If the SteamVR dashboard opens on its own when the game starts, open the game's
+*Properties* in Steam and turn off *Use Desktop Game Theatre while SteamVR is active*.
 
 ## Recommended game settings
 
@@ -80,6 +91,100 @@ the game runs normally without VR. To uninstall, delete the three files.
 | **Insert** | Head tracking on (default) / off. Turning it on re-centres the view. |
 | **Home** | Re-centre position: the camera goes back to the character's eyes. |
 | **Delete** | Toggle between *free look* (the character does not turn with your head) and *walk where I look* (the character turns to follow the headset). |
+| **F5** | Diorama mode on / off (see below). |
+
+## Diorama mode
+
+Press **F5** (or **R3** with the gamepad in the model layer). The whole level appears as a
+miniature model on a virtual table 45 cm in front of you, a little below your eyes, with your
+character in the centre — and you keep playing on it. Look at it from any side, lean in, walk
+around it. Press F5 again to go back to the normal VR view.
+
+* **The whole map** at once (1:10 to start, from 1:1 to 1:500): every room, walls seen from
+  both sides, ceilings included, no fog. Water reflections, object shadows, moving torch
+  light, doors, walls that break down and the sky all work on the model. The level is drawn
+  on the GPU in this mode, so the game keeps its 60 fps with the whole map.
+* **Model modes** (LB, or left stick click on the motion controllers): *fixed* (the model
+  stays where you put it), *attached* (default: the model moves with the character, who stays
+  in the centre of the table) and *from behind* (attached, and the model slowly turns so you
+  see the character from behind, like the game camera).
+* **Seeing inside:**
+  * **Height cut** — removes everything above a height.
+  * **Vertical cut** — removes everything between you and a vertical plane in front of the
+    character, on the side you are looking at. It is straight, along the walls of the map, and
+    stays on its side when you turn the model. In the *from behind* mode it turns with the
+    model, so you always see the model cut from the front; hold **A** on the gamepad to switch
+    to a straight cut that smoothly moves to the new side of the map when the model turns past
+    half way.
+  * **Visible area** — only a square of the map around the character is drawn.
+  * **View cone** — a round hole between your eyes and the character that removes the walls,
+    ceilings and upper floors in the way (off at start, three widths).
+  * **Characters** stay always visible (default) or are cut like the rest.
+* **Move relative to your view** (Delete toggles, on by default): with the gamepad in the game,
+  pushing the left stick forward walks towards where you are looking on the model. Combat and
+  combos work as usual. In the *from behind* mode the game's own control is used.
+* **Cinematics** are followed from the game's camera. Only the zoom, the cone, the cuts, the
+  area and the background work, and the zoom makes the world grow or shrink like a model.
+  Re-centring (Home or X) goes back to the cinematic camera keeping the size. When it ends,
+  the model comes back as it was.
+* A short notice on the headset shows every change.
+
+### Keyboard
+
+| Key | Function |
+|---|---|
+| **F5** | Diorama on / off. |
+| **Home** | Put the model in front of you, centred on the character, at 1:15 to find it quickly (in a cinematic: back to its camera). |
+| **Page Up / Page Down** | Zoom: model bigger / smaller. |
+| **F4** | View cone: off → small → medium → large. |
+| **F6** | Visible area: whole map → 60 → 30 → 15 m. |
+| **F7** | Background: the game's own → magenta → green (mixed reality). |
+| **Pause** | Characters in the cuts: always visible ↔ cut. |
+| **Delete** | Move the character relative to your view of the model on / off. |
+
+### Gamepad (Xbox layout, through Steam Input)
+
+**L3** switches the whole gamepad between the game and the model, also outside diorama mode.
+While the gamepad controls the model, the game receives nothing but Start and Back and the
+character stands still; press L3 again to play.
+
+| Button | Function |
+|---|---|
+| **R3** | Diorama on / off. Held: characters in the cuts. |
+| **X** | Put the model in front of you at 1:15 (in a cinematic: back to its camera). |
+| **LB** | Model mode: fixed → attached → from behind. |
+| **RB** | Visible area: whole map → 50 → 20 m (back to the whole map also removes the cuts). |
+| **D-pad left / right** | View cone on / off. |
+| **D-pad up / down** | View cone wider / narrower. |
+| **A** | Vertical cut 1.5 m in front of the character on / off. Held: in the *from behind* mode, cut turning with the model ↔ straight cut that changes side. |
+| **B** | Height cut 1.5 m above the character on / off. |
+| **Y** | Passthrough background on / off. |
+| **Right stick** | Up / down: zoom. Left / right: turn the model around the table (not in the *from behind* mode). |
+| **RT / LT** | Zoom: model bigger / smaller. |
+| **Left stick** | Move the table sideways and forward / back. |
+
+### Motion controllers (Quest over SteamVR)
+
+| Control | Function |
+|---|---|
+| **One grip** | The model follows your hand: move, raise, lower. |
+| **Both grips** | Spread or close your hands to scale; turn the line between your hands to turn the model. |
+| **One trigger** | Move your hand up or down: height cut. Towards or away from the model: vertical cut. The first direction you move in decides which. |
+| **Both triggers** | Spread or close your hands: size of the visible area. |
+| **Left stick click** | Model mode. Held: view cone off → small → medium → large. |
+| **Right stick click** | Visible area. Held: characters in the cuts. |
+| **Left stick** | Move the table sideways and forward / back. |
+| **Right stick** | Left / right: turn the model. Up / down: zoom. |
+| **X (left)** | Put the model in front of you at 1:15. |
+| **Y (left)** | Passthrough background on / off. |
+| **B / A (right)** | Raise / lower the table. |
+
+### Mixed reality with Virtual Desktop
+
+In Virtual Desktop go to *Streaming → VR Passthrough → Environment* and set a colour key
+(magenta or green, with similarity, smoothing and opacity to taste). In the game press **F7**
+(or **Y**) to draw the background in that colour: the model appears over your room. Link and
+Air Link have no passthrough for SteamVR games.
 
 ## How it works
 
@@ -118,6 +223,17 @@ in every direction. The pose used for rendering is attached to the `Submit`
 mode the character is turned with mouse movement that only the game sees: a raw-input message
 posted to its window, whose contents are supplied by `GetRawInputData`, hooked in the game's
 import table.
+
+**Diorama mode** (`DioramaHook.cpp`, `DioramaGpuLevel.cpp`). The camera written by the game is
+replaced by the head pose carried to the table (anchor + rotation · (head − table) · scale),
+and the eye separation is multiplied by the scale, which is what makes the world look like a
+small model. The world is drawn once from the centre of the head and every draw is issued
+twice with an off-axis eye offset; water reflections, which the engine clips with cones
+through the eye, are drawn once per eye. Portal visibility, back-face culling and fog are
+turned off so the whole map is drawn. With the engine's CPU transform the whole map was too
+slow, so on entering a level the faces the engine sends are captured once and drawn by the GPU
+with the engine's own lighting; doors, breakable walls and flowing liquids, which change
+during play, are still drawn by the engine. Cuts and the view cone are applied per pixel.
 
 **Game addresses.** The `Blade.exe` offsets (the `k...` constants at the top of
 `HeadTrackHook.cpp`, `SceneCullingRootHook.cpp` and `FromWorldLocator.cpp`) match the Steam
@@ -159,6 +275,8 @@ hookdll/                 BladeVR.dll
   OpenVRHook.*           SteamVR: init, poses, frustums, Submit
   HeadTrackHook.*        6DOF head tracking and collision
   SceneCullingRootHook.* world drawn once from each eye; culling kept in sync
+  DioramaHook.*          diorama mode: model camera, cuts, cone, controls, cinematics
+  DioramaGpuLevel.*      diorama mode: level captured and drawn on the GPU
   FromWorldLocator.*     finds the global view matrix in memory
   HookLogger.*           optional log
 proxydll/                dxgi.dll proxy (ProxyMain.cpp + MASM thunks)
@@ -178,11 +296,18 @@ ThirdParty/openvr/       openvr.h, openvr_api.lib, openvr_api.dll (OpenVR SDK)
 * The mirror on your monitor does not show the screens anchored in front of you (the F1 combo
   list and the character sheet): those go straight to the SteamVR overlay and never pass
   through the game's own image.
-* VR motion controllers are not supported: you play with keyboard and mouse or with a
-  gamepad, as in the flat game.
+* VR motion controllers are only used in diorama mode: in the normal view you play with
+  keyboard and mouse or with a gamepad, as in the flat game.
+* Diorama mode: very small effects (the ripples of footsteps in water) can be smaller than a
+  pixel when the model is small, and particle effects (such as waterfalls) are not reflected
+  in the water of the model.
 
 ## Version history
 
+* **1.6** — Diorama mode: the whole level as a miniature model on a table, with height and
+  vertical cuts, visible area, view cone, three model modes, movement relative to your view,
+  cinematics, mixed-reality background for Virtual Desktop, motion controllers and a gamepad
+  layer for the model, and notices on the headset.
 * **1.2** — The world is now drawn by the engine from each eye. No more black slivers at the
   edges of doorways and columns; shadows, water reflections and torch light are correct in
   both eyes. *Walk where I look* (Delete) now turns the character without moving the

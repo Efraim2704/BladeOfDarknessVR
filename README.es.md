@@ -9,6 +9,11 @@ de cabeza** a través de SteamVR / OpenVR. Desarrollado y probado con una Meta Q
 Los ficheros del juego no se modifican. El mod es una DLL que se carga al arrancar `Blade.exe`
 (mediante un `dxgi.dll` proxy) y engancha DirectX 11 y unas pocas funciones del motor.
 
+**Novedad de la 1.6: el [modo diorama](#modo-diorama).** Con una tecla el nivel entero se
+convierte en una maqueta sobre una mesa virtual en la que sigues jugando. Se agarra, se mueve,
+se gira y se escala con los mandos de movimiento o con un mando, y se corta para ver por
+dentro.
+
 > **Aviso.** Este mod ha sido elaborado íntegramente con ayuda de inteligencia
 > artificial, dirigido, supervisado y probado por su autor a lo largo de muchas
 > etapas e iteraciones: cada cambio se ha probado en el juego y en
@@ -31,15 +36,19 @@ Los ficheros del juego no se modifican. El mod es una DLL que se carga al arranc
   el cursor del ratón de Windows no se mueve.
 * En el monitor se ve el ojo izquierdo centrado (con bandas negras a los lados) en vez
   de la imagen partida; también se puede usar la ventana "Vista de RV" de SteamVR.
+* **Modo diorama.** El nivel entero como maqueta sobre una mesa, con cortes, cono de
+  visión, tres modos de maqueta, cinemáticas y fondo para realidad mixta (ver más abajo).
 * Se juega con **teclado y ratón o con mando**, exactamente igual que el juego original.
-  No se usan los mandos de VR.
+  Los mandos de movimiento de VR solo se usan en el modo diorama.
 * Funciona desde el menú principal; no hace falta ningún inyector ni lanzador.
 
 ## Requisitos
 
 * Blade of Darkness (remaster de 2021, Steam, 64 bits).
-* SteamVR y un visor compatible (probado con Quest 2 por Link / Air Link).
+* SteamVR y un visor compatible (probado con Quest 2 por Link / Air Link y Virtual Desktop).
 * Windows 10/11 x64.
+* Modo diorama con mando: Steam Input (lo que usa el juego por defecto). Realidad mixta:
+  Virtual Desktop (opcional).
 
 ## Instalación
 
@@ -52,6 +61,10 @@ normalmente `...\steamapps\common\Blade of Darkness\bin\bin`):
 
 Arrancar primero SteamVR y después el juego. Si SteamVR no está en marcha o no hay visor,
 el juego funciona con normalidad, sin VR. Para desinstalar, borrar los tres ficheros.
+
+Si al arrancar el juego se abre solo el panel de SteamVR, abre las *Propiedades* del juego en
+Steam y desactiva *Use Desktop Game Theatre while SteamVR is active* (usar el teatro de juegos
+de escritorio con SteamVR).
 
 ## Ajustes recomendados del juego
 
@@ -84,6 +97,101 @@ el juego funciona con normalidad, sin VR. Para desinstalar, borrar los tres fich
 | **Insert** | Seguimiento de cabeza activo (por defecto) / apagado. Al activarlo se recentra la vista. |
 | **Inicio** | Recentra la posición: la cámara vuelve a los ojos del personaje. |
 | **Supr** | Alterna entre *vista libre* (el personaje no gira con la cabeza) y *camino hacia donde miro* (el personaje gira siguiendo al visor). |
+| **F5** | Modo diorama sí / no (ver más abajo). |
+
+## Modo diorama
+
+Pulsa **F5** (o **R3** con el mando en la capa de la maqueta). El nivel entero aparece como una
+maqueta sobre una mesa virtual 45 cm delante de ti, algo por debajo de los ojos, con tu
+personaje en el centro, y sigues jugando en ella. Mírala desde cualquier lado, acércate,
+rodéala. Pulsa F5 otra vez para volver a la vista VR normal.
+
+* **El mapa entero** a la vez (1:10 al empezar, de 1:1 a 1:500): todas las salas, las paredes
+  por los dos lados, los techos también, sin niebla. En la maqueta funcionan los reflejos del
+  agua, las sombras de objetos, la luz de las antorchas que se mueven, las puertas, los muros
+  que se derriban y el cielo. En este modo el nivel se dibuja en la GPU, así que el juego
+  mantiene sus 60 fps con el mapa entero.
+* **Modos de la maqueta** (LB, o clic del stick izquierdo de los mandos de movimiento): *fija*
+  (se queda donde la pones), *acoplada* (por defecto: se mueve con el personaje, que queda
+  siempre en el centro de la mesa) y *por la espalda* (acoplada, y además la maqueta gira
+  despacio hasta ver al personaje por la espalda, como la cámara del juego).
+* **Para ver por dentro:**
+  * **Corte de altura**: quita todo lo que queda por encima de una altura.
+  * **Corte vertical**: quita todo lo que queda entre tú y un plano vertical delante del
+    personaje, en el lado que miras. Va recto, por las paredes del mapa, y se queda en su lado
+    aunque gires la maqueta. En el modo *por la espalda* gira con la maqueta, así que siempre
+    la ves cortada de frente; mantén **A** en el mando para cambiar a un corte recto que pasa
+    con suavidad al lado nuevo del mapa cuando la maqueta gira más de la mitad.
+  * **Área visible**: solo se dibuja un cuadrado del mapa alrededor del personaje.
+  * **Cono de visión**: un agujero redondo entre tus ojos y el personaje que quita paredes,
+    techos y pisos de arriba que tapan (apagado al empezar, tres anchos).
+  * **Personajes**: siempre a la vista (por defecto) o cortados como el resto.
+* **Moverse respecto a la vista** (Supr lo cambia; activo por defecto): con el mando en el
+  juego, el stick izquierdo hacia delante lleva al personaje hacia donde miras sobre la
+  maqueta. El combate y los combos funcionan como siempre. En el modo *por la espalda* se usa
+  el control del propio juego.
+* **Cinemáticas**: la vista sigue la cámara del juego. Solo funcionan el zoom, el cono, los
+  cortes, el área y el fondo, y el zoom agranda o encoge el mundo como una maqueta. Recentrar
+  (Inicio o X) vuelve a la cámara de la cinemática conservando el tamaño. Al acabar, la
+  maqueta vuelve como estaba.
+* Un aviso breve en el visor muestra cada cambio.
+
+### Teclado
+
+| Tecla | Función |
+|---|---|
+| **F5** | Diorama sí / no. |
+| **Inicio** | Pone la maqueta delante, centrada en el personaje, a 1:15 para encontrarle rápido (en una cinemática: vuelve a su cámara). |
+| **Re Pág / Av Pág** | Zoom: maqueta más grande / más pequeña. |
+| **F4** | Cono de visión: apagado → pequeño → mediano → grande. |
+| **F6** | Área visible: mapa entero → 60 → 30 → 15 m. |
+| **F7** | Fondo: el del juego → magenta → verde (realidad mixta). |
+| **Pausa** | Personajes en los cortes: siempre a la vista ↔ se cortan. |
+| **Supr** | Mover al personaje respecto a la vista sobre la maqueta sí / no. |
+
+### Mando (distribución de Xbox, por Steam Input)
+
+**L3** pasa todo el mando del juego a la maqueta y al revés, también fuera del modo diorama.
+Mientras el mando controla la maqueta, el juego solo recibe Start y Back y el personaje se
+queda quieto; pulsa L3 otra vez para jugar.
+
+| Botón | Función |
+|---|---|
+| **R3** | Diorama sí / no. Mantenido: personajes en los cortes. |
+| **X** | Pone la maqueta delante a 1:15 (en una cinemática: vuelve a su cámara). |
+| **LB** | Modo: fija → acoplada → por la espalda. |
+| **RB** | Área visible: mapa entero → 50 → 20 m (al volver al mapa entero también quita los cortes). |
+| **Cruceta izquierda / derecha** | Cono de visión sí / no. |
+| **Cruceta arriba / abajo** | Cono más ancho / más estrecho. |
+| **A** | Corte vertical 1,5 m delante del personaje sí / no. Mantenido: en el modo *por la espalda*, corte que gira con la maqueta ↔ corte recto que cambia de lado. |
+| **B** | Corte de altura 1,5 m sobre el personaje sí / no. |
+| **Y** | Fondo de passthrough sí / no. |
+| **Stick derecho** | Arriba / abajo: zoom. A los lados: girar la maqueta alrededor de la mesa (no en el modo *por la espalda*). |
+| **RT / LT** | Zoom: maqueta más grande / más pequeña. |
+| **Stick izquierdo** | Desplazar la mesa a los lados y adelante / atrás. |
+
+### Mandos de movimiento (Quest por SteamVR)
+
+| Control | Función |
+|---|---|
+| **Un grip** | La maqueta sigue a la mano: moverla, subirla, bajarla. |
+| **Los dos grips** | Separa o junta las manos para escalar; gira la recta entre las manos para girar la maqueta. |
+| **Un gatillo** | Sube o baja la mano: corte de altura. Acércala o aléjala de la maqueta: corte vertical. La primera dirección en que la muevas decide cuál. |
+| **Los dos gatillos** | Separa o junta las manos: tamaño del área visible. |
+| **Clic del stick izquierdo** | Modo de la maqueta. Mantenido: cono apagado → pequeño → mediano → grande. |
+| **Clic del stick derecho** | Área visible. Mantenido: personajes en los cortes. |
+| **Stick izquierdo** | Desplazar la mesa a los lados y adelante / atrás. |
+| **Stick derecho** | A los lados: girar la maqueta. Arriba / abajo: zoom. |
+| **X (izquierdo)** | Pone la maqueta delante a 1:15. |
+| **Y (izquierdo)** | Fondo de passthrough sí / no. |
+| **B / A (derecho)** | Subir / bajar la mesa. |
+
+### Realidad mixta con Virtual Desktop
+
+En Virtual Desktop ve a *Streaming → VR Passthrough → Environment* y pon una clave de color
+(magenta o verde, con la similitud, el suavizado y la opacidad a tu gusto). En el juego pulsa
+**F7** (o **Y**) para pintar el fondo de ese color: la maqueta aparece sobre tu habitación.
+Link y Air Link no tienen passthrough para juegos de SteamVR.
 
 ## Cómo funciona
 
@@ -126,6 +234,19 @@ gira con movimiento de ratón que solo ve el juego: un mensaje de entrada *raw i
 su ventana, cuyo contenido entrega `GetRawInputData`, enganchada en la tabla de importaciones
 del juego.
 
+**Modo diorama** (`DioramaHook.cpp`, `DioramaGpuLevel.cpp`). La cámara que escribe el juego se
+sustituye por la pose de la cabeza llevada a la mesa (ancla + giro · (cabeza − mesa) ·
+escala), y la separación entre ojos se multiplica por la escala, que es lo que hace que el
+mundo se vea como una maqueta pequeña. El mundo se dibuja una vez desde el centro de la
+cabeza y cada draw se emite dos veces con un desplazamiento de ojo off-axis; los reflejos del
+agua, que el motor recorta con conos que pasan por el ojo, se dibujan una vez por ojo. Se
+apagan la visibilidad por portales, el descarte de caras traseras y la niebla para que se
+dibuje el mapa entero. Con la transformación por CPU del motor el mapa entero iba demasiado
+lento, así que al entrar en un nivel se capturan una vez las caras que manda el motor y las
+dibuja la GPU con la iluminación del propio motor; las puertas, los muros que se derriban y
+los líquidos que corren, que cambian durante la partida, los sigue dibujando el motor. Los
+cortes y el cono se aplican por píxel.
+
 **Direcciones del juego.** Los offsets de `Blade.exe` (constantes `k...` al principio de
 `HeadTrackHook.cpp`, `SceneCullingRootHook.cpp` y `FromWorldLocator.cpp`) corresponden a la
 versión de Steam del remaster; si el juego se actualiza habrá que revisarlos.
@@ -167,6 +288,8 @@ hookdll/                 BladeVR.dll
   OpenVRHook.*           SteamVR: init, poses, frustums, Submit
   HeadTrackHook.*        seguimiento de cabeza 6DOF y colisión
   SceneCullingRootHook.* mundo dibujado una vez desde cada ojo; culling sincronizado
+  DioramaHook.*          modo diorama: cámara de la maqueta, cortes, cono, controles, cinemáticas
+  DioramaGpuLevel.*      modo diorama: nivel capturado y dibujado en la GPU
   FromWorldLocator.*     localiza la matriz de vista global en memoria
   HookLogger.*           log opcional
 proxydll/                dxgi.dll proxy (ProxyMain.cpp + thunks MASM)
@@ -186,11 +309,18 @@ ThirdParty/openvr/       openvr.h, openvr_api.lib, openvr_api.dll (OpenVR SDK)
 * El espejo del monitor no muestra las pantallas ancladas delante de ti (la lista de combos
   de F1 y la ficha de personaje): esas van directas al overlay de SteamVR y no pasan por la
   imagen del juego.
-* No hay soporte de mandos de movimiento de VR: se juega con teclado y ratón o con un mando,
-  igual que en plano.
+* Los mandos de movimiento de VR solo se usan en el modo diorama: en la vista normal se juega
+  con teclado y ratón o con un mando, igual que en plano.
+* Modo diorama: los efectos muy pequeños (las ondas de las pisadas en el agua) pueden quedar
+  por debajo de un píxel con la maqueta pequeña, y los efectos de partículas (como las
+  cascadas) no se reflejan en el agua de la maqueta.
 
 ## Historial de versiones
 
+* **1.6** — Modo diorama: el nivel entero como maqueta sobre una mesa, con cortes de altura y
+  vertical, área visible, cono de visión, tres modos de maqueta, movimiento respecto a la
+  vista, cinemáticas, fondo de realidad mixta para Virtual Desktop, mandos de movimiento y
+  capa de maqueta en el mando, y avisos en el visor.
 * **1.2** — El motor dibuja ahora el mundo desde cada ojo. Se acabaron las franjas negras en
   los bordes de puertas y columnas; las sombras, los reflejos del agua y la luz de las
   antorchas son correctos en los dos ojos. *Camino hacia donde miro* (Supr) gira ahora al

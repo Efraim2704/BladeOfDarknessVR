@@ -29,6 +29,8 @@ static vr::IVRSystem* g_vrSystem = nullptr;
 static vr::IVRCompositor* g_vrCompositor = nullptr;
 static vr::IVROverlay* g_vrOverlay = nullptr;
 static vr::VROverlayHandle_t g_flatOverlay = vr::k_ulOverlayHandleInvalid;
+static vr::VROverlayHandle_t g_toastOverlay = vr::k_ulOverlayHandleInvalid;   // aviso anclado al visor
+static bool g_toastVisible = false;
 static ID3D11Texture2D* g_blackTexture = nullptr;   // escena negra bajo la pantalla plana
 static bool g_flatScreenVisible = false;
 static std::atomic<bool> g_available{false};
@@ -170,6 +172,9 @@ void UninstallOpenVRHook() {
     HideFlatScreen();
     if (g_vrOverlay && g_flatOverlay != vr::k_ulOverlayHandleInvalid) g_vrOverlay->DestroyOverlay(g_flatOverlay);
     g_flatOverlay = vr::k_ulOverlayHandleInvalid;
+    if (g_vrOverlay && g_toastOverlay != vr::k_ulOverlayHandleInvalid) g_vrOverlay->DestroyOverlay(g_toastOverlay);
+    g_toastOverlay = vr::k_ulOverlayHandleInvalid;
+    g_toastVisible = false;
     g_vrOverlay = nullptr;
     if (g_blackTexture) { g_blackTexture->Release(); g_blackTexture = nullptr; }
     if (g_VR_ShutdownInternal && g_vrSystem) g_VR_ShutdownInternal();
@@ -265,12 +270,76 @@ bool GetHmdPoseMatrix34(float* out12) {
     return true;
 }
 
+// --- mandos ------------------------------------------------------------------
+static std::mutex g_handMutex;
+static VrHandState g_hands[2] = {};
+static bool g_gripLatch[2] = {false, false};
+static bool g_triggerLatch[2] = {false, false};
+static int32_t g_axisType[vr::k_unMaxTrackedDeviceCount][3];   // tipo de los ejes 0..2 (cache)
+static bool g_axisTypeKnown[vr::k_unMaxTrackedDeviceCount] = {};
+static constexpr float kAnalogPress = 0.80f;
+static constexpr float kAnalogRelease = 0.55f;
+
+// Solo con g_compositorMutex tomado (hilo de Present). Agarre: boton Grip o
+// eje de tipo gatillo en el 2 (Touch de Meta); gatillo: boton Trigger o su
+// eje (el 1). Con histeresis en los analogicos.
+static void UpdateHandsLocked(const vr::TrackedDevicePose_t* poses) {
+    if (!g_vrSystem) return;
+    const vr::ETrackedControllerRole roles[2] = { vr::TrackedControllerRole_LeftHand,
+                                                  vr::TrackedControllerRole_RightHand };
+    VrHandState next[2] = {};
+    for (int h = 0; h < 2; ++h) {
+        vr::TrackedDeviceIndex_t idx = g_vrSystem->GetTrackedDeviceIndexForControllerRole(roles[h]);
+        if (idx == vr::k_unTrackedDeviceIndexInvalid || idx >= vr::k_unMaxTrackedDeviceCount) continue;
+        if (!poses[idx].bPoseIsValid) continue;
+        vr::VRControllerState_t st{};
+        if (!g_vrSystem->GetControllerState(idx, &st, sizeof(st))) continue;
+        if (!g_axisTypeKnown[idx]) {
+            g_axisType[idx][0] = g_vrSystem->GetInt32TrackedDeviceProperty(idx, vr::Prop_Axis0Type_Int32);
+            g_axisType[idx][1] = g_vrSystem->GetInt32TrackedDeviceProperty(idx, vr::Prop_Axis1Type_Int32);
+            g_axisType[idx][2] = g_vrSystem->GetInt32TrackedDeviceProperty(idx, vr::Prop_Axis2Type_Int32);
+            g_axisTypeKnown[idx] = true;
+        }
+        next[h].valid = true;
+        for (int r = 0; r < 3; ++r) {
+            for (int c = 0; c < 4; ++c) next[h].pose[r * 4 + c] = poses[idx].mDeviceToAbsoluteTracking.m[r][c];
+        }
+        bool gripBit = (st.ulButtonPressed & vr::ButtonMaskFromId(vr::k_EButton_Grip)) != 0;
+        bool triggerBit = (st.ulButtonPressed & vr::ButtonMaskFromId(vr::k_EButton_SteamVR_Trigger)) != 0;
+        float trigger = (g_axisType[idx][1] == vr::k_eControllerAxis_Trigger) ? st.rAxis[1].x : 0.0f;
+        float grip = (g_axisType[idx][2] == vr::k_eControllerAxis_Trigger) ? st.rAxis[2].x : 0.0f;
+        g_triggerLatch[h] = triggerBit || trigger > (g_triggerLatch[h] ? kAnalogRelease : kAnalogPress);
+        g_gripLatch[h] = gripBit || grip > (g_gripLatch[h] ? kAnalogRelease : kAnalogPress);
+        next[h].grip = g_gripLatch[h];
+        next[h].trigger = g_triggerLatch[h];
+        next[h].stickClick = (st.ulButtonPressed & vr::ButtonMaskFromId(vr::k_EButton_SteamVR_Touchpad)) != 0;
+        if (g_axisType[idx][0] == vr::k_eControllerAxis_Joystick) {
+            next[h].stickX = st.rAxis[0].x;
+            next[h].stickY = st.rAxis[0].y;
+        }
+        next[h].buttonA = (st.ulButtonPressed & vr::ButtonMaskFromId(vr::k_EButton_A)) != 0;
+        next[h].buttonB = (st.ulButtonPressed & vr::ButtonMaskFromId(vr::k_EButton_ApplicationMenu)) != 0;
+    }
+    std::lock_guard<std::mutex> lock(g_handMutex);
+    g_hands[0] = next[0];
+    g_hands[1] = next[1];
+}
+
+bool GetVrHandState(int hand, VrHandState* out) {
+    if (!out || hand < 0 || hand > 1) return false;
+    if (!g_available.load(std::memory_order_relaxed)) return false;
+    std::lock_guard<std::mutex> lock(g_handMutex);
+    *out = g_hands[hand];
+    return out->valid;
+}
+
 void PumpOpenVRFrameTiming() {
     if (!g_available.load(std::memory_order_relaxed) || !g_vrCompositor) return;
     {
         std::lock_guard<std::mutex> lock(g_compositorMutex);
         vr::TrackedDevicePose_t poses[vr::k_unMaxTrackedDeviceCount];
         g_vrCompositor->WaitGetPoses(poses, vr::k_unMaxTrackedDeviceCount, nullptr, 0);
+        UpdateHandsLocked(poses);
         const vr::TrackedDevicePose_t& hmd = poses[vr::k_unTrackedDeviceIndex_Hmd];
         if (hmd.bPoseIsValid) {
             std::lock_guard<std::mutex> poseLock(g_hmdPoseMutex);
@@ -284,8 +353,8 @@ void PumpOpenVRFrameTiming() {
 }
 
 // --- pantalla plana (overlay) ----------------------------------------------
-static bool EnsureFlatOverlay() {
-    if (g_flatOverlay != vr::k_ulOverlayHandleInvalid) return true;
+static bool EnsureOverlayInterface() {
+    if (g_vrOverlay) return true;
     if (!g_VR_GetGenericInterface) return false;
     vr::EVRInitError ifaceError = vr::VRInitError_None;
     g_vrOverlay = static_cast<vr::IVROverlay*>(g_VR_GetGenericInterface(vr::IVROverlay_Version, &ifaceError));
@@ -294,6 +363,12 @@ static bool EnsureFlatOverlay() {
         g_vrOverlay = nullptr;
         return false;
     }
+    return true;
+}
+
+static bool EnsureFlatOverlay() {
+    if (g_flatOverlay != vr::k_ulOverlayHandleInvalid) return true;
+    if (!EnsureOverlayInterface()) return false;
     vr::EVROverlayError err = g_vrOverlay->CreateOverlay("bladevr.flatscreen", "BladeVR flat screen", &g_flatOverlay);
     if (err != vr::VROverlayError_None) {
         std::ostringstream o;
@@ -386,6 +461,104 @@ void HideFlatScreen() {
     g_flatScreenVisible = false;
     if (g_vrOverlay && g_flatOverlay != vr::k_ulOverlayHandleInvalid) g_vrOverlay->HideOverlay(g_flatOverlay);
     HookLogger::Instance().Line("[OPENVR] Pantalla plana ocultada.");
+}
+
+// --- aviso anclado al visor --------------------------------------------------
+// Texto dibujado con GDI en un mapa de bits y subido con SetOverlayRaw a un
+// overlay pegado al visor (SetOverlayTransformTrackedDeviceRelative), arriba
+// a la derecha del campo de vision. Gris y blanco: el orden BGRA/RGBA da
+// igual.
+static constexpr int kToastW = 640;
+static constexpr int kToastH = 150;
+static constexpr float kToastWidthM = 0.26f;
+static uint64_t g_toastHideTick = 0;
+static unsigned char g_toastPixels[kToastW * kToastH * 4];
+
+static bool RenderToastPixels(const wchar_t* title, const wchar_t* text) {
+    HDC screen = GetDC(nullptr);
+    HDC dc = CreateCompatibleDC(screen);
+    ReleaseDC(nullptr, screen);
+    if (!dc) return false;
+    BITMAPINFO bi{};
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth = kToastW;
+    bi.bmiHeader.biHeight = -kToastH;   // de arriba abajo
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    HBITMAP bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!bmp || !bits) { DeleteDC(dc); return false; }
+    HGDIOBJ oldBmp = SelectObject(dc, bmp);
+    RECT all{0, 0, kToastW, kToastH};
+    HBRUSH bg = CreateSolidBrush(RGB(22, 22, 22));
+    FillRect(dc, &all, bg);
+    DeleteObject(bg);
+    RECT bar{0, 0, 10, kToastH};
+    HBRUSH accent = CreateSolidBrush(RGB(200, 200, 200));
+    FillRect(dc, &bar, accent);
+    DeleteObject(accent);
+    SetBkMode(dc, TRANSPARENT);
+    HFONT fontTitle = CreateFontW(40, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                              CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+    HFONT fontText = CreateFontW(58, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                            CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+    HGDIOBJ oldFont = SelectObject(dc, fontTitle);
+    SetTextColor(dc, RGB(175, 175, 175));
+    RECT r1{34, 10, kToastW - 20, 62};
+    DrawTextW(dc, title ? title : L"", -1, &r1, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+    SelectObject(dc, fontText);
+    SetTextColor(dc, RGB(255, 255, 255));
+    RECT r2{34, 62, kToastW - 20, kToastH - 10};
+    DrawTextW(dc, text ? text : L"", -1, &r2, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+    GdiFlush();
+    const unsigned char* src = static_cast<const unsigned char*>(bits);
+    for (int i = 0; i < kToastW * kToastH; ++i) {
+        g_toastPixels[i * 4 + 0] = src[i * 4 + 2];
+        g_toastPixels[i * 4 + 1] = src[i * 4 + 1];
+        g_toastPixels[i * 4 + 2] = src[i * 4 + 0];
+        g_toastPixels[i * 4 + 3] = 225;
+    }
+    SelectObject(dc, oldFont);
+    DeleteObject(fontTitle);
+    DeleteObject(fontText);
+    SelectObject(dc, oldBmp);
+    DeleteObject(bmp);
+    DeleteDC(dc);
+    return true;
+}
+
+bool OpenVRShowToast(const wchar_t* title, const wchar_t* text, unsigned durationMs) {
+    if (!g_available.load(std::memory_order_relaxed) || !g_vrCompositor) return false;
+    if (!EnsureOverlayInterface()) return false;
+    if (g_toastOverlay == vr::k_ulOverlayHandleInvalid) {
+        vr::EVROverlayError err = g_vrOverlay->CreateOverlay("bladevr.toast", "BladeVR aviso", &g_toastOverlay);
+        if (err != vr::VROverlayError_None) {
+            g_toastOverlay = vr::k_ulOverlayHandleInvalid;
+            return false;
+        }
+        g_vrOverlay->SetOverlayWidthInMeters(g_toastOverlay, kToastWidthM);
+        g_vrOverlay->SetOverlaySortOrder(g_toastOverlay, 10);
+        // Arriba a la derecha, a 60 cm, de cara al ojo.
+        vr::HmdMatrix34_t xform{};
+        xform.m[0][0] = 1.0f; xform.m[1][1] = 1.0f; xform.m[2][2] = 1.0f;
+        xform.m[0][3] = 0.15f;
+        xform.m[1][3] = 0.11f;
+        xform.m[2][3] = -0.60f;
+        g_vrOverlay->SetOverlayTransformTrackedDeviceRelative(g_toastOverlay, vr::k_unTrackedDeviceIndex_Hmd, &xform);
+    }
+    if (!RenderToastPixels(title, text)) return false;
+    g_vrOverlay->SetOverlayRaw(g_toastOverlay, g_toastPixels, kToastW, kToastH, 4);
+    g_vrOverlay->ShowOverlay(g_toastOverlay);
+    g_toastVisible = true;
+    g_toastHideTick = GetTickCount64() + durationMs;
+    return true;
+}
+
+void OpenVRUpdateToast() {
+    if (!g_toastVisible || GetTickCount64() < g_toastHideTick) return;
+    g_toastVisible = false;
+    if (g_vrOverlay && g_toastOverlay != vr::k_ulOverlayHandleInvalid) g_vrOverlay->HideOverlay(g_toastOverlay);
 }
 
 void* GetOpenVRInterface(const char* interfaceVersion) {

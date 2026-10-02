@@ -80,6 +80,30 @@ void* GetOpenVRInterface(const char* interfaceVersion);
 // Abre el panel de SteamVR (boton Menu mantenido).
 void OpenVRShowDashboard();
 
+// Mandos (entrada heredada de SteamVR: el mod no registra un manifiesto de
+// acciones, asi que SteamVR le da los botones de siempre con sus enlaces por
+// defecto). Se leen en PumpOpenVRFrameTiming con las poses de la misma
+// WaitGetPoses que el visor.
+struct VrHandState {
+    bool valid;          // mando conectado y con pose
+    float pose[12];      // 3x4 fila-mayor en el espacio de seguimiento (como el visor)
+    bool grip;           // agarre apretado
+    bool trigger;        // gatillo apretado
+    bool stickClick;     // clic del joystick (boton Touchpad/Axis0 de la entrada heredada)
+    float stickX;        // joystick (Axis0 si es de tipo joystick): derecha +
+    float stickY;        // arriba +
+    bool buttonA;        // A (derecho) / X (izquierdo): k_EButton_A
+    bool buttonB;        // B (derecho) / Y (izquierdo): k_EButton_ApplicationMenu
+};
+// hand: 0 izquierda, 1 derecha. false si no hay datos de ese mando.
+bool GetVrHandState(int hand, VrHandState* out);
+
+// Aviso anclado al visor (arriba a la derecha, como un HUD): dos lineas de
+// texto que se ocultan solas a los durationMs. Hilo de Present.
+bool OpenVRShowToast(const wchar_t* title, const wchar_t* text, unsigned durationMs);
+// Hilo de Present, una vez por fotograma: oculta el aviso cuando toca.
+void OpenVRUpdateToast();
+
 void LogOpenVRSummary();
 
 } // namespace BladeVR
