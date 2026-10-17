@@ -1,11 +1,14 @@
 #include "OpenVRHook.h"
 #include "HookLogger.h"
+#include "VrInput.h"
+#include "VrPadHook.h"
 #include "openvr.h"
 #include <windows.h>
 #include <d3d11.h>
 #include <atomic>
 #include <sstream>
 #include <string>
+#include <cstdio>
 #include <cstdint>
 #include <mutex>
 
@@ -146,7 +149,26 @@ static DWORD WINAPI OpenVRInstallThreadProc(LPVOID) {
     log.Line("[OPENVR] Inicializado. Resolucion recomendada por ojo: " + std::to_string(recWidth) + "x" +
              std::to_string(recHeight) + ".");
     g_available = true;
+    {
+        // Ronda 44: para comparar con la separacion entre ojos del mod.
+        char line[160];
+        std::snprintf(line, sizeof(line), "[OPENVR] distancia entre ojos del visor: %.1f mm.", GetHmdIpdMm());
+        log.Line(line);
+    }
     return 0;
+}
+
+float GetHmdIpdMm() {
+    if (!g_available.load(std::memory_order_relaxed) || !g_vrSystem) return 0.0f;
+    vr::ETrackedPropertyError pe = vr::TrackedProp_Success;
+    float ipd = g_vrSystem->GetFloatTrackedDeviceProperty(vr::k_unTrackedDeviceIndex_Hmd, vr::Prop_UserIpdMeters_Float, &pe);
+    if (pe != vr::TrackedProp_Success || !(ipd > 0.03f && ipd < 0.09f)) {
+        vr::HmdMatrix34_t l = g_vrSystem->GetEyeToHeadTransform(vr::Eye_Left);
+        vr::HmdMatrix34_t r = g_vrSystem->GetEyeToHeadTransform(vr::Eye_Right);
+        ipd = r.m[0][3] - l.m[0][3];
+        if (!(ipd > 0.03f && ipd < 0.09f)) return 0.0f;
+    }
+    return ipd * 1000.0f;
 }
 
 bool InstallOpenVRHook() {
@@ -288,10 +310,32 @@ static void UpdateHandsLocked(const vr::TrackedDevicePose_t* poses) {
     const vr::ETrackedControllerRole roles[2] = { vr::TrackedControllerRole_LeftHand,
                                                   vr::TrackedControllerRole_RightHand };
     VrHandState next[2] = {};
+    // Acciones de OpenVR (2.0); si no estan, la entrada heredada de siempre.
+    VrInputHands in;
+    bool actions = VrInputRead(&in);
     for (int h = 0; h < 2; ++h) {
         vr::TrackedDeviceIndex_t idx = g_vrSystem->GetTrackedDeviceIndexForControllerRole(roles[h]);
         if (idx == vr::k_unTrackedDeviceIndexInvalid || idx >= vr::k_unMaxTrackedDeviceCount) continue;
         if (!poses[idx].bPoseIsValid) continue;
+        if (actions) {
+            next[h].valid = true;
+            for (int r = 0; r < 3; ++r) {
+                for (int c = 0; c < 4; ++c) next[h].pose[r * 4 + c] = poses[idx].mDeviceToAbsoluteTracking.m[r][c];
+            }
+            g_triggerLatch[h] = in.trigger[h] > (g_triggerLatch[h] ? kAnalogRelease : kAnalogPress);
+            next[h].grip = in.grip[h];
+            next[h].trigger = g_triggerLatch[h];
+            next[h].triggerValue = in.trigger[h];
+            next[h].stickClick = in.stickClick[h];
+            next[h].stickX = in.stickX[h];
+            next[h].stickY = in.stickY[h];
+            next[h].buttonA = in.buttonA[h];
+            next[h].buttonB = in.buttonB[h];
+            next[h].thumbrest = in.thumbrest[h];
+            next[h].stickTouch = in.stickTouch[h];
+            next[h].stickTouchKnown = in.stickTouchBound[h];
+            continue;
+        }
         vr::VRControllerState_t st{};
         if (!g_vrSystem->GetControllerState(idx, &st, sizeof(st))) continue;
         if (!g_axisTypeKnown[idx]) {
@@ -312,6 +356,7 @@ static void UpdateHandsLocked(const vr::TrackedDevicePose_t* poses) {
         g_gripLatch[h] = gripBit || grip > (g_gripLatch[h] ? kAnalogRelease : kAnalogPress);
         next[h].grip = g_gripLatch[h];
         next[h].trigger = g_triggerLatch[h];
+        next[h].triggerValue = triggerBit && trigger < 0.01f ? 1.0f : trigger;
         next[h].stickClick = (st.ulButtonPressed & vr::ButtonMaskFromId(vr::k_EButton_SteamVR_Touchpad)) != 0;
         if (g_axisType[idx][0] == vr::k_eControllerAxis_Joystick) {
             next[h].stickX = st.rAxis[0].x;
@@ -320,6 +365,9 @@ static void UpdateHandsLocked(const vr::TrackedDevicePose_t* poses) {
         next[h].buttonA = (st.ulButtonPressed & vr::ButtonMaskFromId(vr::k_EButton_A)) != 0;
         next[h].buttonB = (st.ulButtonPressed & vr::ButtonMaskFromId(vr::k_EButton_ApplicationMenu)) != 0;
     }
+    // Mandos de Quest como mando del juego (plantillas, recentrar, diorama):
+    // puede ocultar un clic de joystick suyo antes de que lo vea el diorama.
+    VrPadOnHands(next, actions);
     std::lock_guard<std::mutex> lock(g_handMutex);
     g_hands[0] = next[0];
     g_hands[1] = next[1];

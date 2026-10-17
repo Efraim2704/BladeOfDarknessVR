@@ -53,6 +53,10 @@ void PumpOpenVRFrameTiming();
 // posicion en metros). false si aun no hay pose valida.
 bool GetHmdPoseMatrix34(float* out12);
 
+// Ronda 44: distancia entre los ojos del visor en mm (Prop_UserIpdMeters_Float o,
+// si no la da, las transformaciones de los ojos); 0 si no se sabe.
+float GetHmdIpdMm();
+
 // Pantalla plana anclada al mundo para la fase de arranque (video de intro,
 // carga inicial): un overlay de SteamVR con el fotograma entero, colocado con
 // la transformacion screenPose12 (3x4, en el espacio de seguimiento del
@@ -80,10 +84,12 @@ void* GetOpenVRInterface(const char* interfaceVersion);
 // Abre el panel de SteamVR (boton Menu mantenido).
 void OpenVRShowDashboard();
 
-// Mandos (entrada heredada de SteamVR: el mod no registra un manifiesto de
-// acciones, asi que SteamVR le da los botones de siempre con sus enlaces por
-// defecto). Se leen en PumpOpenVRFrameTiming con las poses de la misma
-// WaitGetPoses que el visor.
+// Mandos. Desde la 2.0 por las acciones de OpenVR (VrInput.cpp, para tener
+// el reposapulgares) y, si eso falla, por la entrada heredada como antes; el
+// significado de cada campo es el mismo por las dos vias. Se leen en
+// PumpOpenVRFrameTiming con las poses de la misma WaitGetPoses que el visor.
+// VrPadHook puede ocultar un clic de joystick que sea suyo (cambiar de
+// plantilla o salir del diorama) para que el diorama no lo vea.
 struct VrHandState {
     bool valid;          // mando conectado y con pose
     float pose[12];      // 3x4 fila-mayor en el espacio de seguimiento (como el visor)
@@ -94,6 +100,10 @@ struct VrHandState {
     float stickY;        // arriba +
     bool buttonA;        // A (derecho) / X (izquierdo): k_EButton_A
     bool buttonB;        // B (derecho) / Y (izquierdo): k_EButton_ApplicationMenu
+    bool thumbrest;      // pulgar en el reposapulgares (solo con las acciones de OpenVR)
+    float triggerValue;  // gatillo 0..1
+    bool stickTouch;     // pulgar sobre el joystick (solo con las acciones de OpenVR)
+    bool stickTouchKnown;  // el toque del joystick llega (enlazado); si no, stickTouch no vale
 };
 // hand: 0 izquierda, 1 derecha. false si no hay datos de ese mando.
 bool GetVrHandState(int hand, VrHandState* out);

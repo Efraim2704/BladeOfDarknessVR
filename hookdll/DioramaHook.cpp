@@ -1,9 +1,11 @@
 #include "DioramaHook.h"
+#include "BladeVRIni.h"
 #include "DioramaGpuLevel.h"
 #include "HeadTrackHook.h"
 #include "HookLogger.h"
 #include "OpenVRHook.h"
 #include "StereoHook.h"
+#include "VrPadHook.h"
 #include <windows.h>
 #include <MinHook.h>
 #include <intrin.h>
@@ -2953,6 +2955,11 @@ static std::atomic<uint32_t> g_padPresses[kPadButtonCount];  // pulsaciones
 static std::atomic<float> g_padAxisX[kPadAxisCount];
 static std::atomic<float> g_padAxisY[kPadAxisCount];
 static std::atomic<bool> g_padLayer{false};                  // el mando es de la maqueta
+// Ronda 72: los botones de los Quest en el modo 0 (como un mando de Xbox), con
+// su propio estado (si hay tambien un mando de Xbox, cada uno el suyo).
+static bool g_qPadDown[kPadButtonCount] = {};                // hilo del juego
+static std::atomic<bool> g_qPadHeld[kPadButtonCount];
+static std::atomic<uint64_t> g_qPadTick{0};
 
 static void ResolveSteamHandles(void* self) {
     uint64_t now = GetTickCount64();
@@ -2976,6 +2983,7 @@ static void ResolveSteamHandles(void* self) {
 static SteamDigitalData* __fastcall HookedSteamGetDigital(void* self, SteamDigitalData* out,
                                                          unsigned long long controller, unsigned long long handle) {
     SteamDigitalData* r = g_origSteamGetDigital(self, out, controller, handle);
+    if (VrPadIsQuestController(controller)) return r;   // ronda 72: los Quest van por DioramaQuestPadButton (VrPadHook)
     ResolveSteamHandles(self);
     if (out && handle != 0) {
         for (int b = 0; b < kPadButtonCount; ++b) {
@@ -2992,9 +3000,28 @@ static SteamDigitalData* __fastcall HookedSteamGetDigital(void* self, SteamDigit
     return r;
 }
 
+bool DioramaQuestPadButton(int b, bool down) {
+    if (b < 0 || b >= kPadButtonCount) return down;
+    g_qPadTick.store(GetTickCount64(), std::memory_order_relaxed);
+    g_qPadHeld[b].store(down, std::memory_order_relaxed);
+    if (down && !g_qPadDown[b]) g_padPresses[b].fetch_add(1, std::memory_order_relaxed);
+    g_qPadDown[b] = down;
+    if (b == kPadL3 || g_padLayer.load(std::memory_order_relaxed)) return false;
+    return down;
+}
+
+bool DioramaPadLayerActive() { return g_padLayer.load(std::memory_order_relaxed); }
+
+// Apretado en el mando del juego o en los Quest (si sus botones llegan aun).
+static bool PadHeldAny(int b) {
+    if (g_padHeld[b].load(std::memory_order_relaxed)) return true;
+    return g_qPadHeld[b].load(std::memory_order_relaxed) && GetTickCount64() - g_qPadTick.load(std::memory_order_relaxed) < 250;
+}
+
 static SteamAnalogData* __fastcall HookedSteamGetAnalog(void* self, SteamAnalogData* out,
                                                        unsigned long long controller, unsigned long long handle) {
     SteamAnalogData* r = g_origSteamGetAnalog(self, out, controller, handle);
+    if (VrPadIsQuestController(controller)) return r;   // ronda 72
     ResolveSteamHandles(self);
     if (out && handle != 0) {
         for (int a = 0; a < kPadAxisCount; ++a) {
@@ -3111,7 +3138,6 @@ static constexpr double kStickDeadzone = 0.15;
 static constexpr double kStickPanMps = 0.5;           // stick izquierdo: metros reales por segundo
 static constexpr double kStickTurnRadPs = kPi / 2.0;  // stick derecho: 90 grados por segundo
 static constexpr double kStickZoomPerS = 0.6931;      // zoom: el doble (o la mitad) por segundo
-static constexpr double kButtonLiftMps = 0.3;         // A / B
 
 static void HandPosition(const VrHandState& h, double out[3]) {
     out[0] = h.pose[3];
@@ -3250,6 +3276,11 @@ static void CycleAreaShape() {
     OpenVRShowToast(L"\u00c1rea visible", AreaTextW(md).c_str(), kToastMs);
 }
 
+// Peticion de los mandos de Quest (VrPadHook): se atiende como F5.
+static std::atomic<bool> g_toggleRequest{false};
+
+void DioramaRequestToggle() { g_toggleRequest.store(true, std::memory_order_relaxed); }
+
 // Diorama si/no (F5, R3 con el mando en la capa de la maqueta).
 static void ToggleDiorama() {
     bool next = !g_enabled.load(std::memory_order_relaxed);
@@ -3258,6 +3289,7 @@ static void ToggleDiorama() {
         GpuLevelRetryCapture();   // si fallo la captura del nivel, se vuelve a intentar
     }
     g_enabled.store(next, std::memory_order_relaxed);
+    IniSetInt("diorama", next ? 1 : 0);   // ronda 54: se recuerda en BladeVR.ini (CombatVR vuelve a entrar al empezar)
     if (!next) HeadTrackRequestRecenter();   // la vista vuelve a los ojos del personaje (como Inicio)
     Model md = SnapshotModel();
     HookLogger::Instance().Line(next ? "[DIORAMA] modo diorama activado." : "[DIORAMA] modo diorama desactivado.");
@@ -3297,9 +3329,9 @@ static bool ViewCutDirection(const Model& s, double out[2]) {
     return true;
 }
 
-// A del mando (capa de la maqueta): corte vertical delante del personaje, en
-// el lado que se mira (quita la pared que tapa; por la espalda, de cara a la
-// mirada); otra vez, sin corte.
+// A del mando (capa de la maqueta) o A del mando derecho de Quest (ronda 76):
+// corte vertical delante del personaje, en el lado que se mira (quita la pared
+// que tapa; por la espalda, de cara a la mirada); otra vez, sin corte.
 static constexpr double kPadVcutAheadM = 1.5;
 static void TogglePadVcut() {
     Model s = SnapshotModel();
@@ -3325,8 +3357,9 @@ static void TogglePadVcut() {
     OpenVRShowToast(L"Corte vertical", md.vcutOn ? L"Delante del personaje" : L"Sin corte", kToastMs);
 }
 
-// A mantenido (capa de la maqueta): corte vertical recto o de frente (solo
-// cambia algo por la espalda: ver StraightVcut). Sin corte, lo pone.
+// A mantenido (capa de la maqueta, o A de Quest): corte vertical recto o de
+// frente (solo cambia algo por la espalda: ver StraightVcut). Sin corte, lo
+// pone.
 static void ToggleVcutStraight() {
     Model s = SnapshotModel();
     double dir[2];
@@ -3350,8 +3383,9 @@ static void ToggleVcutStraight() {
     OpenVRShowToast(L"Corte vertical", straight ? L"Recto: cambia de lado" : L"Gira con la maqueta", kToastMs);
 }
 
-// B del mando (capa de la maqueta): corte de altura un poco por encima del
-// personaje (quita techos y pisos de arriba); otra vez, sin corte.
+// B del mando (capa de la maqueta) o B del mando derecho de Quest (ronda 76):
+// corte de altura un poco por encima del personaje (quita techos y pisos de
+// arriba); otra vez, sin corte.
 static constexpr double kPadHcutAboveM = 1.5;
 static void TogglePadHcut() {
     Model md;
@@ -3385,6 +3419,12 @@ static bool g_padAPending = false;              // A del mando: corto (corte si/
 static uint64_t g_padATick = 0;
 static bool g_prevButtonA[2] = {false, false};
 static bool g_prevButtonB[2] = {false, false};
+// Ronda 76 (pedido del usuario): A y B del mando derecho de Quest hacen los
+// cortes de A y B del mando de Xbox (antes bajaban y subian la mesa; la altura
+// de la mesa se cambia con un grip). A: corto, corte vertical si / no;
+// mantenido, recto o de frente.
+static bool g_questAPending = false;
+static uint64_t g_questATick = 0;
 static uint32_t g_padSeen[kPadButtonCount] = {};
 static LARGE_INTEGER g_lastControlsQpc = {};
 
@@ -3417,7 +3457,7 @@ static void UpdatePadLayer() {
         g_padR3Tick = now;
     }
     if (g_padR3Pending) {
-        bool held = g_padHeld[kPadR3].load(std::memory_order_relaxed);
+        bool held = PadHeldAny(kPadR3);
         if (held && now - g_padR3Tick >= kLongPressMs) {
             g_padR3Pending = false;
             if (g_enabled.load(std::memory_order_relaxed)) ToggleCutPersons();
@@ -3435,7 +3475,7 @@ static void UpdatePadLayer() {
         g_padATick = now;
     }
     if (g_padAPending) {
-        bool held = g_padHeld[kPadA].load(std::memory_order_relaxed);
+        bool held = PadHeldAny(kPadA);
         if (held && now - g_padATick >= kLongPressMs) {
             g_padAPending = false;
             ToggleVcutStraight();
@@ -3486,7 +3526,10 @@ static void UpdateStickAndButtonControls(bool hl, const VrHandState& L, bool hr,
         g_prevButtonA[h] = btnA[h];
         g_prevButtonB[h] = btnB[h];
     }
-    if (!g_enabled.load(std::memory_order_relaxed)) return;
+    if (!g_enabled.load(std::memory_order_relaxed)) {
+        g_questAPending = false;
+        return;
+    }
 
     // --- clics y botones ---
     if (clickPressed[0]) {
@@ -3523,6 +3566,20 @@ static void UpdateStickAndButtonControls(bool hl, const VrHandState& L, bool hr,
         OpenVRShowToast(L"Maqueta", L"Centrada en el personaje (1:15)", kToastMs);
     }
     if (bPressed[0]) TogglePassthrough();
+    if (aPressed[1]) {             // A (ronda 76)
+        g_questAPending = true;
+        g_questATick = GetTickCount64();
+    }
+    if (g_questAPending) {
+        if (btnA[1] && GetTickCount64() - g_questATick >= kLongPressMs) {
+            g_questAPending = false;
+            ToggleVcutStraight();
+        } else if (!btnA[1]) {
+            g_questAPending = false;
+            TogglePadVcut();
+        }
+    }
+    if (bPressed[1]) TogglePadHcut();   // B (ronda 76)
 
     // --- movimientos continuos (no mientras se agarra la maqueta) ---
     if (dt <= 0.0 || gestureActive) return;
@@ -3547,9 +3604,6 @@ static void UpdateStickAndButtonControls(bool hl, const VrHandState& L, bool hr,
         if (std::abs(pry) >= kStickDeadzone) ry += pry;
         if (std::abs(trig) >= 0.05) ry += trig;
     }
-    double lift = 0.0;
-    if (btnA[1]) lift += kButtonLiftMps * dt;   // A: bajar (Y del juego hacia abajo)
-    if (btnB[1]) lift -= kButtonLiftMps * dt;   // B: subir
     if (cine) {
         // Cinematica: ni mover ni girar la maqueta; el zoom si.
         if (ry != 0.0) {
@@ -3560,7 +3614,7 @@ static void UpdateStickAndButtonControls(bool hl, const VrHandState& L, bool hr,
         }
         return;
     }
-    if (lx == 0.0 && ly == 0.0 && rx == 0.0 && ry == 0.0 && lift == 0.0) return;
+    if (lx == 0.0 && ly == 0.0 && rx == 0.0 && ry == 0.0) return;
 
     // Ejes horizontales de la mirada (seguimiento, ejes del juego).
     double fwd[2] = {0.0, 1.0}, right[2] = {1.0, 0.0};
@@ -3581,7 +3635,6 @@ static void UpdateStickAndButtonControls(bool hl, const VrHandState& L, bool hr,
     // izquierda (respecto a la mirada).
     g_model.table[0] -= (right[0] * lx + fwd[0] * ly) * kStickPanMps * dt;
     g_model.table[2] -= (right[1] * lx + fwd[1] * ly) * kStickPanMps * dt;
-    g_model.table[1] += lift;
     // Stick derecho: derecha = rodear la maqueta por la derecha (gira en el
     // sentido de las agujas del reloj vista desde arriba) alrededor del punto
     // de la mesa; en el modo "por la espalda" el giro es automatico.
@@ -3597,6 +3650,9 @@ static void UpdateHandGestures() {
     VrHandState L{}, R{};
     bool hl = GetVrHandState(0, &L) && L.valid;
     bool hr = GetVrHandState(1, &R) && R.valid;
+    // Ronda 62 de combate: con los mandos manejando al personaje (VrPadHook),
+    // la maqueta no los ve.
+    if (VrPadDioramaGameActive()) hl = hr = false;
     int mode = kGestureNone;
     int hand = -1;
     if (g_enabled.load(std::memory_order_relaxed)) {
@@ -3844,7 +3900,9 @@ void DioramaPollKeys() {
     TryInstallSteamInputHooks();
     OpenVRUpdateToast();
     UpdatePadLayer();
-    if (KeyPressedOnce(VK_F5, g_f5WasDown)) ToggleDiorama();
+    bool f5 = KeyPressedOnce(VK_F5, g_f5WasDown);
+    bool padToggle = g_toggleRequest.exchange(false, std::memory_order_relaxed);
+    if (f5 || padToggle) ToggleDiorama();
     if (KeyPressedOnce(VK_F6, g_f6WasDown)) {
         int next = (g_areaPreset.load(std::memory_order_relaxed) + 1) % kAreaPresetCount;
         g_areaPreset.store(next, std::memory_order_relaxed);

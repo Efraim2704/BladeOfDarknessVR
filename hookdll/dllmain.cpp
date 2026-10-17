@@ -8,6 +8,7 @@
 #include "HeadTrackHook.h"
 #include "FovHook.h"
 #include "DioramaHook.h"
+#include "CombatVRHook.h"
 
 // ---------------------------------------------------------------------
 // BladeVR.dll -- mod de realidad virtual para Severance: Blade of Darkness
@@ -35,6 +36,13 @@
 //                         en el visor).
 //   DioramaHook           modo diorama (F5): el mapa entero como maqueta
 //                         delante del jugador, a escala y visto por fuera.
+//   CombatVRHook          combate con los mandos de movimiento (version 2.0):
+//                         las manos del personaje siguen a los mandos con
+//                         cinematica inversa; Ctrl+F8 / Mayus+F8 (ver
+//                         CombatVRHook.h).
+//   VrPadHook             los mandos de Quest como mando del juego (2.0).
+//   VrInput               mandos por las acciones de OpenVR (2.0).
+//   BladeVRIni            ajustes que se recuerdan en BladeVR.ini (2.0).
 //   FromWorldLocator      localiza la matriz de vista global en memoria.
 //   HookLogger            log en BladeVR_logs\ junto a Blade.exe.
 //
@@ -66,6 +74,10 @@ static DWORD WINAPI InstallThreadProc(LPVOID) {
     bool headOk = BladeVR::InstallHeadTrackHooks();
     log.Line(headOk ? "[BOOT] Seguimiento de cabeza instalado."
                     : "[BOOT] Seguimiento de cabeza NO pudo instalarse (ver [HEAD_TRACK]).");
+
+    bool combatOk = BladeVR::InstallCombatVRHooks();
+    log.Line(combatOk ? "[BOOT] Combate con mandos instalado."
+                      : "[BOOT] Combate con mandos NO pudo instalarse (ver [COMBATE]).");
 
     bool openVrOk = BladeVR::InstallOpenVRHook();
     log.Line(openVrOk ? "[BOOT] Inicializacion de OpenVR lanzada (asincrona)."

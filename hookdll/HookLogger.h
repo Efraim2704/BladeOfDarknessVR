@@ -15,7 +15,7 @@
 namespace BladeVR {
 
 // Version del mod, en la cabecera de cada log.
-constexpr const char* kBladeVRVersion = "1.6";
+constexpr const char* kBladeVRVersion = "2.0";
 
 class HookLogger {
 public:

@@ -12,6 +12,7 @@
 #include <MinHook.h>
 #include <atomic>
 #include <sstream>
+#include <cwchar>
 #include <cstdint>
 #include <cstring>
 #include <cmath>
@@ -147,6 +148,9 @@ static constexpr UINT kPanelTexMinW = 1024;
 static constexpr int kPanelEnterFrames = 3;
 static int g_panelFrames = 0;
 static bool g_uiOverlayActive = false;
+static constexpr int kPanelLiveMaxFrames = 15;    // ronda 50: 0,25 s con la logica viva
+static int g_panelLiveFrames = 0;
+static std::atomic<bool> g_panelLive{false};       // ronda 50: panel de la partida (va con el HUD)
 // El menu principal necesita ademas saber si la logica del juego esta parada
 // (pasadas de culling seguidas sin que el juego toque la camara), porque
 // algunas de sus paginas no dibujan la mascara.
@@ -270,9 +274,25 @@ static void LatchFlatPhase() {
     }
     bool flat = !scene || fullMask || (wideBg && !panel && logicStopped);
     g_panelFrames = (panel && scene && !fullMask) ? g_panelFrames + 1 : 0;
+    // Ronda 50: un panel con el juego en marcha (la camara se sigue escribiendo)
+    // es un mensaje de la partida, no F1 ni la ficha: tras matar a ciertos
+    // enemigos sale uno 10 s y el HUD se quedaba anclado en el mundo. Pasados
+    // kPanelLiveMaxFrames con la logica viva, el panel va con el HUD (pegado
+    // al visor) hasta que desaparezca.
+    // Ronda 52: con el juego parado (F1 abierto mientras sigue el "pulse F1" de
+    // subir de nivel) vuelve a ser un panel para la pantalla anclada.
+    if (g_panelFrames == 0 || logicStopped) g_panelLive.store(false, std::memory_order_relaxed);
+    g_panelLiveFrames = (g_panelFrames > 0 && !logicStopped) ? g_panelLiveFrames + 1 : 0;
     if (g_uiOverlayActive) {
-        if (!panel || !scene || fullMask) g_uiOverlayActive = false;
-    } else if (g_panelFrames >= kPanelEnterFrames) {
+        if (!panel || !scene || fullMask) {
+            g_uiOverlayActive = false;
+        } else if (g_panelLiveFrames >= kPanelLiveMaxFrames) {
+            g_uiOverlayActive = false;
+            g_panelLive.store(true, std::memory_order_relaxed);
+            HookLogger::Instance().Line("[STEREO] Interfaz anclada: el juego sigue en marcha con el panel (mensaje de la "
+                                        "partida): va con el HUD, pegado al visor.");
+        }
+    } else if (g_panelFrames >= kPanelEnterFrames && !g_panelLive.load(std::memory_order_relaxed)) {
         g_uiOverlayActive = true;
     }
     bool uiOverlay = g_uiOverlayActive;
@@ -285,7 +305,8 @@ static void LatchFlatPhase() {
     // instante en la pantalla anclada, que si se notaba.
     g_uiOverlayPrev.store(redirected && (panel || fullMask), std::memory_order_relaxed);
     if (g_uiOverlayLatched.exchange(uiOverlay, std::memory_order_relaxed) != uiOverlay) {
-        HookLogger::Instance().Line(uiOverlay ? "[STEREO] Interfaz anclada (panel sobre el juego): activada."
+        HookLogger::Instance().Line(uiOverlay ? (logicStopped ? "[STEREO] Interfaz anclada (panel sobre el juego): activada (logica parada)."
+                                                               : "[STEREO] Interfaz anclada (panel sobre el juego): activada (logica viva).")
                                               : "[STEREO] Interfaz anclada: terminada.");
     }
     g_flatPrev.store(g_flatLatched.load(std::memory_order_relaxed), std::memory_order_relaxed);
@@ -379,6 +400,16 @@ void StereoPollKeys() {
     if (KeyPressedOnce(VK_PRIOR, g_pgUpWasDown)) delta += kEyeSeparationStep;   // Re Pag
     if (KeyPressedOnce(VK_NEXT, g_pgDnWasDown)) delta -= kEyeSeparationStep;    // Av Pag
     if (DioramaEnabled()) delta = 0.0f;   // en diorama cambian la escala, no la separacion
+    if (delta != 0.0f && (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0) {
+        // Ronda 26 de combate: con Ctrl, ojos adelantados sobre la camara del juego.
+        HeadTrackAdjustEyeForward(delta > 0.0f ? 1 : -1);
+        delta = 0.0f;
+    }
+    if (delta != 0.0f && (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) {
+        // Ronda 46 de combate: con Mayus, altura anadida a los ojos (5 cm).
+        HeadTrackAdjustEyeLift(delta > 0.0f ? 5 : -5);
+        delta = 0.0f;
+    }
     if (delta != 0.0f) {
         float v = g_eyeSeparationUnits.load(std::memory_order_relaxed) + delta;
         if (v < 0.0f) v = 0.0f;
@@ -387,6 +418,10 @@ void StereoPollKeys() {
         std::ostringstream o;
         o << "[STEREO] separacion entre ojos = " << v << " unidades (Re Pag sube, Av Pag baja)";
         HookLogger::Instance().Line(o.str());
+        // Ronda 46: el valor tambien en el visor.
+        wchar_t txt[80];
+        std::swprintf(txt, 80, L"%d (de serie 58; el visor tiene %.0f mm)", static_cast<int>(v + 0.5f), GetHmdIpdMm());
+        OpenVRShowToast(L"Separaci\u00f3n entre ojos", txt, 1500);
     }
 
     if (KeyPressedOnce(VK_END, g_endWasDown)) {
@@ -1198,9 +1233,12 @@ static void EmitDraw(ID3D11DeviceContext* ctx, UINT vertexCount, DrawFn&& draw) 
         // mascara ya se ha visto en este mismo fotograma, antes de decidir la
         // fase plana): asi el menu aparece ya en su sitio, sin un fotograma
         // pegado a la mirada.
+        // Ronda 51: un panel de la partida (g_panelLive) ya no: el resto de la
+        // interfaz de ese fotograma se desviaba a la pantalla anclada desde que
+        // se veia el panel ("pulse F1" de subir de nivel se quedaba fijo).
         bool toOverlay = g_uiOverlayLatched.load(std::memory_order_relaxed) ||
                          g_frameFullMaskSeen.load(std::memory_order_relaxed) ||
-                         g_framePanelSeen.load(std::memory_order_relaxed);
+                         (g_framePanelSeen.load(std::memory_order_relaxed) && !g_panelLive.load(std::memory_order_relaxed));
         if (isUi && toOverlay && DrawUiIntoOverlayTexture(ctx, frame, draw)) {
             g_frameUiRedirected.store(true, std::memory_order_relaxed);
             return;

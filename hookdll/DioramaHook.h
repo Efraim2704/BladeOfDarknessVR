@@ -35,7 +35,11 @@ namespace BladeVR {
 //                       zoom; clic corto: area (mapa entero -> 50 m -> 20 m;
 //                       "mapa entero" quita tambien los cortes); clic largo:
 //                       personajes en los cortes.
-//   A / B (derecho)   : bajar / subir la mesa.
+//   A (derecho)       : corte vertical delante del personaje si / no (como A
+//                       del mando de Xbox; mantenido: recto o de frente).
+//   B (derecho)       : corte de altura sobre el personaje si / no (como B del
+//                       mando de Xbox). (Ronda 76; antes bajaban y subian la
+//                       mesa: la altura se cambia con un grip.)
 //   X (izquierdo)     : recolocar (como Inicio).
 //   Y (izquierdo)     : passthrough si / no con el ultimo color.
 // Mando de Xbox (Steam Input): L3 cambia todo el mando entre el juego y la
@@ -63,6 +67,17 @@ void DioramaPollKeys();
 
 // true si el usuario tiene puesto el diorama (F5).
 bool DioramaEnabled();
+// Pone o quita el diorama como F5 en el siguiente DioramaPollKeys (mandos de
+// Quest, VrPadHook: pulgar izquierdo en reposo + clic del joystick derecho,
+// para entrar y para salir).
+void DioramaRequestToggle();
+// Ronda 72, hilo del juego: los botones del mando de los Quest en el modo 0
+// (VrPadHook) pasan por la capa de la maqueta del mando del juego como los de
+// un mando de Xbox. button en el orden A, B, X, Y, LB, RB, arriba, abajo, izq,
+// dcha, L3, R3. Devuelve lo que recibe el juego.
+bool DioramaQuestPadButton(int button, bool down);
+// Cualquier hilo: la capa de la maqueta del mando del juego esta puesta (L3).
+bool DioramaPadLayerActive();
 // La maqueta se vuelve a colocar en el siguiente fotograma (nivel nuevo).
 void DioramaRequestAnchor();
 // Hilo del juego (HeadTrackHook), justo antes de DioramaComputeCamera con la

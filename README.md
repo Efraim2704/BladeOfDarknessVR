@@ -9,9 +9,15 @@ through SteamVR / OpenVR. Developed and tested with a Meta Quest 2 over SteamVR.
 The game files are not modified. The mod is a DLL that is loaded when `Blade.exe` starts
 (through a `dxgi.dll` proxy) and hooks DirectX 11 plus a handful of engine functions.
 
-**New in 1.6: [diorama mode](#diorama-mode).** With one key the whole level becomes a miniature
-model on a virtual table that you keep playing on. Grab, move, turn and scale it with the
-motion controllers or a gamepad, and cut it open to see inside.
+**New in 2.0: [combat with motion controllers](#motion-controllers-in-the-game).** Your hands
+are the character's hands: swing the weapon to strike, raise the shield to block, take an
+arrow from your back and draw the bow, punch with empty hands, bring food to your mouth to
+eat. The Quest controllers are also a complete gamepad for everything else, and there are
+four combat modes, from full motion controls to the classic game with the controllers used
+as an Xbox gamepad.
+
+Since 1.6: [diorama mode](#diorama-mode). With one key the whole level becomes a miniature
+model on a virtual table that you keep playing on.
 
 > **Disclaimer.** This mod was written entirely with the help of artificial
 > intelligence, directed, supervised and tested by its author over many stages and
@@ -29,15 +35,21 @@ motion controllers or a gamepad, and cut it open to see inside.
 * **6DOF head tracking.** The camera follows the rotation *and* position of the headset,
   anchored to the game's own camera, in both first and third person. Leaning into walls or
   objects is prevented using the engine's own collision.
-* **"Walk where I look" mode.** Optional: the character turns to follow the headset so you
-  walk in the direction you are looking. The turn is delivered only to the game, so the
-  Windows mouse cursor is never moved.
+* **Motion-controller combat.** In first person the character's arms follow your hands and
+  its body stays under the headset. Weapons hit where they actually touch (the engine's own
+  hit detection, with sparks, blood and cuts), at the same rate and stamina cost as the
+  game's basic attack. Shield, two-handed weapons, bow, punches, throwing, drawing and
+  sheathing weapons, food and potions all work with gestures.
+* **The Quest controllers as a gamepad.** They reach the game as one more Xbox controller,
+  so menus, combos, inventory and everything else work as with a real gamepad. You can use a
+  real gamepad and the keyboard at the same time.
+* **"Walk where I look" mode.** The character turns to follow the headset so you walk in the
+  direction you are looking (on by default with motion controls). The turn is delivered only
+  to the game, so the Windows mouse cursor is never moved.
 * The monitor shows the left eye centred (with black bars at the sides) instead of the
   split image; SteamVR's own "VR View" window is also available.
 * **Diorama mode.** The whole level as a model on a table, with cuts, a view cone, three
   model modes, cinematics and a mixed-reality background (see below).
-* Played with **keyboard and mouse or a gamepad**, exactly as the original game. VR motion
-  controllers are only used in diorama mode.
 * Works from the main menu; no injector or launcher needed.
 
 ## Requirements
@@ -45,8 +57,9 @@ motion controllers or a gamepad, and cut it open to see inside.
 * Blade of Darkness (2021 remaster, Steam, 64-bit).
 * SteamVR and a compatible headset (tested with Quest 2 via Link / Air Link and Virtual Desktop).
 * Windows 10/11 x64.
-* Diorama mode with a gamepad: Steam Input (the game's default). Mixed reality: Virtual
-  Desktop (optional).
+* Motion controllers: Quest (Touch) controllers over SteamVR. They reach the game through
+  Steam Input, which is the game's default: leave it on.
+* Diorama mode with a gamepad: Steam Input. Mixed reality: Virtual Desktop (optional).
 
 ## Installation
 
@@ -58,7 +71,13 @@ usually `...\steamapps\common\Blade of Darkness\bin\bin`):
 * `openvr_api.dll` — OpenVR runtime (looked up next to `BladeVR.dll`)
 
 Start SteamVR first, then the game. If SteamVR is not running or no headset is connected,
-the game runs normally without VR. To uninstall, delete the three files.
+the game runs normally without VR. When upgrading, just overwrite the three files.
+
+In the same folder the mod creates the folder `BladeVR_bindings` (the controller bindings it
+gives SteamVR) and, the first time you change a setting, `BladeVR.ini`: last combat mode,
+calibration, stamina on or off, eye height, and whether you left the game in diorama mode
+(then the next game starts in it). To uninstall, delete the three files, `BladeVR_bindings`
+and `BladeVR.ini` (and `BladeVR_logs` and `BladeVR_debug.txt` if you made a debug log).
 
 If the SteamVR dashboard opens on its own when the game starts, open the game's
 *Properties* in Steam and turn off *Use Desktop Game Theatre while SteamVR is active*.
@@ -87,18 +106,99 @@ If the SteamVR dashboard opens on its own when the game starts, open the game's
 | Key | Function |
 |---|---|
 | **Page Up / Page Down** | Eye separation +4 / −4 game units (default 58). Adjust until the world feels the right size. |
+| **Ctrl + Page Up / Page Down** | Eyes further forward / back on the character's head, 1 cm per step (default 10 cm). |
+| **Shift + Page Up / Page Down** | Floating-hands mode only: eyes higher / lower, 5 cm per step (default 0; saved). |
 | **End** | Size of the virtual screen used for menus and HUD (53° / 75° / 90°). |
 | **Insert** | Head tracking on (default) / off. Turning it on re-centres the view. |
 | **Home** | Re-centre position: the camera goes back to the character's eyes. |
-| **Delete** | Toggle between *free look* (the character does not turn with your head) and *walk where I look* (the character turns to follow the headset). |
+| **Delete** | Toggle between *free look* (the character does not turn with your head) and *walk where I look* (the character turns to follow the headset). It starts on *walk where I look* in the motion-controller modes and on *free look* in mode 0. |
+| **Shift + F8** | Swings and punches with the controllers use stamina (default) / do not. Saved. |
+| **Ctrl + F8** | Calibrate your grip and arm length (optional, see below). |
 | **F5** | Diorama mode on / off (see below). |
+
+## Motion controllers in the game
+
+### Combat modes
+
+| Mode | What it does |
+|---|---|
+| **1 · Motion controllers** (default) | The character's arms follow yours. You attack by moving the weapon; A does not attack. |
+| **3 · Floating hands** | Like 1, but without the body: only the forearms, hands and weapons, which follow the controllers with no arm-length limit. Your eyes can be raised (Shift + Page Up / Page Down). |
+| **2 · Motion controllers + combos** | A and the stick directions perform the game's combos (the arms follow the combo animation), and moving the weapon does the basic attack. |
+| **0 · Basic VR** | No motion controls: the Quest controllers are an Xbox gamepad and you play exactly as in the flat game. *Free look* by default. |
+
+**Right thumb on the thumb rest + left stick click held for 1 second** goes to the next
+mode, in the order 1 → 3 → 2 → 0 → 1. A notice on the headset shows the new mode, and the
+last one you chose is remembered. Changing to a motion-controller mode puts the view in
+first person; changing to mode 0 re-centres the view as Insert pressed twice does.
+
+### What your hands do (modes 1, 3 and 2)
+
+* **Attack**: a quick swing with the weapon. It hits where the blade actually touches, with
+  sparks against walls. Pulling the arm back towards your body does not hit.
+* **Punch**: with empty hands, the same quick swing with your fist.
+* **Block**: raise the shield in front of you, at shoulder height or higher, with the back of
+  your left hand facing forward. With a two-handed weapon, hold it with both hands and raise
+  it.
+* **Two-handed weapons**: bring your left hand to the handle and hold the left grip to take
+  the weapon with your left hand too; release the grip to let go.
+* **Draw and sheathe weapons**: reach over your shoulder, behind your head, and press that
+  hand's grip.
+* **Throw** (modes 1 and 3): hold the right grip for half a second and bring your right arm
+  down quickly from head height. In mode 2, as in the game: right grip held + A.
+* **Bow** (modes 1 and 3, bow in the left hand): take an arrow from your back with the right
+  grip, press the right trigger with your right hand next to the bow to take the string,
+  pull your hands apart to draw and release the trigger to shoot. The left grip at your back
+  puts the bow away.
+* **Lock on an enemy** with the right trigger. With your right hand empty it locks on
+  without drawing your weapons. **Y** releases the enemy.
+* **Food and potions** stay in your hand: bring them to your mouth to eat or drink.
+* The game's vibration reaches the controllers.
+
+### Quest controller buttons
+
+| Control | Modes 1, 3 and 2 | Mode 0 (Xbox gamepad) |
+|---|---|---|
+| **Left stick** | Walk (never runs on its own). Locked on an enemy, it moves relative to the enemy, as in the game. | Walk; fully pushed, run. |
+| **Left stick click** | Sprint, in the direction of the stick, until you let it go or click again. | L3 (switches the gamepad's diorama model layer, as on an Xbox gamepad). |
+| **Right stick** | Camera. | Camera. |
+| **Right stick click** | Re-centre the view. | R3. |
+| **A** | Mode 2 and menus: A. Modes 1 and 3: A does not attack while your arms move the character's arms (you attack with the weapon). | A (attack). |
+| **B** | Jump, only with the left stick pushed forward or back (locked on an enemy, any direction: dodges). With the stick at rest or pushed sideways, select nearby objects. | B. |
+| **X** | Use. | X (use). |
+| **Y** | Release the locked enemy. | Y (turn around). |
+| **Left grip** | Hold a two-handed weapon with the left hand. | LB (block). |
+| **Right grip** | RB (throw). | RB (throw). |
+| **Left / right trigger** | LT / RT (RT locks on an enemy). | LT / RT. |
+
+In menus, A, B, Y and the left grip work as on a gamepad. With the **left thumb on the thumb
+rest** (all modes): the right stick is the D-pad (the camera stays still), A is Start and B is
+Back. **Left thumb on the thumb rest + right stick
+click** re-centres the view (in mode 0 this is the way to re-centre); held for 1 second, it
+enters diorama mode.
+
+### Settings
+
+* **Calibration (Ctrl + F8)** is optional: the default grip fits most players. Use it only
+  if the arms feel too long or too short. Pressing it re-centres the view and starts a
+  5-second countdown (one vibration per second); before it ends, stand with both arms
+  stretched forward, thumbs up, looking straight ahead: it measures then. It is saved; to go
+  back to the default grip, delete the `agarre_*` and `alcance_*` lines from `BladeVR.ini`.
+* **Stamina (Shift + F8)**: swings and punches with the controllers use stamina like the
+  game's basic attack; with too little you get a clumsy attack, with none, nothing.
+* A real gamepad and the keyboard and mouse work at the same time as the Quest controllers:
+  the one you are using is the one that counts.
+* When a level loads, the view goes to first person. The arms follow the controllers only
+  in first person.
 
 ## Diorama mode
 
-Press **F5** (or **R3** with the gamepad in the model layer). The whole level appears as a
+Press **F5**, or with the Quest controllers **left thumb on the thumb rest + right stick click
+held for 1 second** (or **R3** with a gamepad in the model layer). The whole level appears as a
 miniature model on a virtual table 45 cm in front of you, a little below your eyes, with your
 character in the centre — and you keep playing on it. Look at it from any side, lean in, walk
-around it. Press F5 again to go back to the normal VR view.
+around it. Press F5 again (Quest: left thumb on the thumb rest + right stick click) to go back
+to the normal VR view.
 
 * **The whole map** at once (1:10 to start, from 1:1 to 1:500): every room, walls seen from
   both sides, ceilings included, no fog. Water reflections, object shadows, moving torch
@@ -113,16 +213,20 @@ around it. Press F5 again to go back to the normal VR view.
   * **Vertical cut** — removes everything between you and a vertical plane in front of the
     character, on the side you are looking at. It is straight, along the walls of the map, and
     stays on its side when you turn the model. In the *from behind* mode it turns with the
-    model, so you always see the model cut from the front; hold **A** on the gamepad to switch
-    to a straight cut that smoothly moves to the new side of the map when the model turns past
-    half way.
+    model, so you always see the model cut from the front; hold **A** to switch to a straight
+    cut that smoothly moves to the new side of the map when the model turns past half way.
   * **Visible area** — only a square of the map around the character is drawn.
   * **View cone** — a round hole between your eyes and the character that removes the walls,
     ceilings and upper floors in the way (off at start, three widths).
   * **Characters** stay always visible (default) or are cut like the rest.
-* **Move relative to your view** (Delete toggles, on by default): with the gamepad in the game,
-  pushing the left stick forward walks towards where you are looking on the model. Combat and
-  combos work as usual. In the *from behind* mode the game's own control is used.
+* **Move relative to your view** (Delete toggles, on by default): pushing the left stick
+  forward walks towards where you are looking on the model. Combat and combos work as usual.
+  In the *from behind* mode the game's own control is used.
+* **Play with the Quest controllers on the model**: right thumb on the thumb rest + left stick
+  click held for 1 second, and the controllers drive the character like an Xbox gamepad,
+  without gestures, in any combat mode: left stick to walk (click: sprint), A attacks, B jumps
+  or selects, X uses, Y turns around, left grip blocks, right grip throws; the right stick
+  click re-centres the model. The same again gives them back to the model.
 * **Cinematics** are followed from the game's camera. Only the zoom, the cone, the cuts, the
   area and the background work, and the zoom makes the world grow or shrink like a model.
   Re-centring (Home or X) goes back to the cinematic camera keeping the size. When it ends,
@@ -134,7 +238,7 @@ around it. Press F5 again to go back to the normal VR view.
 | Key | Function |
 |---|---|
 | **F5** | Diorama on / off. |
-| **Home** | Put the model in front of you, centred on the character, at 1:15 to find it quickly (in a cinematic: back to its camera). |
+| **Home** | Put the model in front of you, centred on the character, at 1:15 to find your character quickly (in a cinematic: back to its camera). |
 | **Page Up / Page Down** | Zoom: model bigger / smaller. |
 | **F4** | View cone: off → small → medium → large. |
 | **F6** | Visible area: whole map → 60 → 30 → 15 m. |
@@ -146,7 +250,8 @@ around it. Press F5 again to go back to the normal VR view.
 
 **L3** switches the whole gamepad between the game and the model, also outside diorama mode.
 While the gamepad controls the model, the game receives nothing but Start and Back and the
-character stands still; press L3 again to play.
+character stands still; press L3 again to play. In combat mode 0 the left stick click of the
+Quest controllers is this L3.
 
 | Button | Function |
 |---|---|
@@ -175,9 +280,10 @@ character stands still; press L3 again to play.
 | **Right stick click** | Visible area. Held: characters in the cuts. |
 | **Left stick** | Move the table sideways and forward / back. |
 | **Right stick** | Left / right: turn the model. Up / down: zoom. |
+| **A (right)** | Vertical cut 1.5 m in front of the character on / off. Held: cut turning with the model ↔ straight (*from behind* mode). |
+| **B (right)** | Height cut 1.5 m above the character on / off. |
 | **X (left)** | Put the model in front of you at 1:15. |
 | **Y (left)** | Passthrough background on / off. |
-| **B / A (right)** | Raise / lower the table. |
 
 ### Mixed reality with Virtual Desktop
 
@@ -222,7 +328,20 @@ in every direction. The pose used for rendering is attached to the `Submit`
 (`Submit_TextureWithPose`) so the compositor reprojects correctly. In *walk where I look*
 mode the character is turned with mouse movement that only the game sees: a raw-input message
 posted to its window, whose contents are supplied by `GetRawInputData`, hooked in the game's
-import table.
+import table. Standing still, it is turned by setting its angle directly, so it does not take
+steps.
+
+**Motion controllers** (`VrInput.cpp`, `VrPadHook.cpp`, `CombatVRHook.cpp`, `CombatVRIk.h`).
+The controllers are read through SteamVR's action input (the mod writes its own action
+manifest and default bindings, which also give the thumb rests). The game reads gamepads
+through Steam Input; seven entries of that interface are replaced so the game sees one more
+Xbox controller, fed from the Quest controllers, and treats it exactly like a real one. The
+arms are posed by inverse kinematics after the engine evaluates the skeleton each frame, with
+whatever the hand holds attached to it. Swings are measured from the real controller and
+switch on the weapon's own hit detection while it moves fast, so the engine itself decides
+where it hits; the stamina cost comes from the game's own formula. Blocking with the shield
+or a two-handed weapon goes through the engine's blocking test, and food, potions and the bow
+use the game's own Python scripts.
 
 **Diorama mode** (`DioramaHook.cpp`, `DioramaGpuLevel.cpp`). The camera written by the game is
 replaced by the head pose carried to the table (anchor + rotation · (head − table) · scale),
@@ -235,9 +354,8 @@ slow, so on entering a level the faces the engine sends are captured once and dr
 with the engine's own lighting; doors, breakable walls and flowing liquids, which change
 during play, are still drawn by the engine. Cuts and the view cone are applied per pixel.
 
-**Game addresses.** The `Blade.exe` offsets (the `k...` constants at the top of
-`HeadTrackHook.cpp`, `SceneCullingRootHook.cpp` and `FromWorldLocator.cpp`) match the Steam
-build of the remaster; they will need checking if the game is updated.
+**Game addresses.** The `Blade.exe` offsets (the `k...` constants at the top of the hook
+files) match the Steam build of the remaster; they will need checking if the game is updated.
 
 ## Building
 
@@ -257,11 +375,12 @@ Then copy the three files from `output\Release\` (`dxgi.dll`, `BladeVR.dll` and
 
 ## Debug log
 
-The mod writes no files by default. To get a log, create an empty file named
+The mod writes no log by default. To get one, create an empty file named
 `BladeVR_debug.txt` next to `Blade.exe`; the mod will then write
 `bin\bin\BladeVR_logs\BladeVR_<pid>_<date>.log` on every run: the modules it installs, the
-SteamVR handshake, the per-eye frustums and a short summary every minute (frame rate, worst
-frame, whether the world is being drawn per eye). Please attach it when reporting a problem.
+SteamVR handshake, the controllers, the per-eye frustums, changes of combat mode and a short
+summary every minute (frame rate, worst frame, whether the world is being drawn per eye,
+what was done with the controllers). Please attach it when reporting a problem.
 
 ## Layout
 
@@ -272,7 +391,12 @@ hookdll/                 BladeVR.dll
   ProjectionHook.*       capture of the projection matrix (VS slot 0)
   StereoHook.*           side-by-side stereo, flat screen, anchored UI, keys
   FovHook.*              minimum field of view (character selection, cinematics)
-  OpenVRHook.*           SteamVR: init, poses, frustums, Submit
+  OpenVRHook.*           SteamVR: init, poses, frustums, Submit, notices on the headset
+  VrInput.*              motion controllers through SteamVR actions (manifest, bindings)
+  VrPadHook.*            the Quest controllers as a Steam Input gamepad, gestures
+  CombatVRHook.*         motion-controller combat: arms, swings, shield, bow, food, modes
+  CombatVRIk.h           inverse kinematics of the arms
+  BladeVRIni.*           BladeVR.ini (settings that are remembered)
   HeadTrackHook.*        6DOF head tracking and collision
   SceneCullingRootHook.* world drawn once from each eye; culling kept in sync
   DioramaHook.*          diorama mode: model camera, cuts, cone, controls, cinematics
@@ -296,14 +420,26 @@ ThirdParty/openvr/       openvr.h, openvr_api.lib, openvr_api.dll (OpenVR SDK)
 * The mirror on your monitor does not show the screens anchored in front of you (the F1 combo
   list and the character sheet): those go straight to the SteamVR overlay and never pass
   through the game's own image.
-* VR motion controllers are only used in diorama mode: in the normal view you play with
-  keyboard and mouse or with a gamepad, as in the flat game.
+* In combat modes 1, 3 and 2 three actions of the game have no button: blocking with a
+  one-handed weapon and no shield, throwing what you hold in the left hand (except by
+  raising the shield) and jumping on the spot. Use mode 0, a gamepad or the keyboard for them.
+* The arms follow the controllers only in first person; in third person the game's own
+  animations are shown.
 * Diorama mode: very small effects (the ripples of footsteps in water) can be smaller than a
   pixel when the model is small, and particle effects (such as waterfalls) are not reflected
   in the water of the model.
 
 ## Version history
 
+* **2.0** — Combat with motion controllers: arms that follow your hands, attacks with the
+  weapon's own hit detection and the game's rate and stamina cost, shield and two-handed
+  blocking, VR bow with arrows from your back, punches, throwing, drawing and sheathing
+  weapons with a gesture, food and potions to your mouth. The Quest controllers as a full
+  gamepad, usable together with a real gamepad and the keyboard. Four combat modes (motion
+  controllers, floating hands, motion controllers with the game's combos, basic VR),
+  remembered in `BladeVR.ini`. *Walk where I look* on by default and without steps when
+  standing still. Diorama mode: enter and leave it with the Quest controllers, play on the
+  model with them, and A / B now give the vertical and height cuts.
 * **1.6** — Diorama mode: the whole level as a miniature model on a table, with height and
   vertical cuts, visible area, view cone, three model modes, movement relative to your view,
   cinematics, mixed-reality background for Virtual Desktop, motion controllers and a gamepad

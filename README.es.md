@@ -9,10 +9,15 @@ de cabeza** a través de SteamVR / OpenVR. Desarrollado y probado con una Meta Q
 Los ficheros del juego no se modifican. El mod es una DLL que se carga al arrancar `Blade.exe`
 (mediante un `dxgi.dll` proxy) y engancha DirectX 11 y unas pocas funciones del motor.
 
-**Novedad de la 1.6: el [modo diorama](#modo-diorama).** Con una tecla el nivel entero se
-convierte en una maqueta sobre una mesa virtual en la que sigues jugando. Se agarra, se mueve,
-se gira y se escala con los mandos de movimiento o con un mando, y se corta para ver por
-dentro.
+**Novedad de la 2.0: el [combate con mandos de movimiento](#mandos-de-movimiento-en-el-juego).**
+Tus manos son las del personaje: mueve el arma para golpear, alza el escudo para bloquear, saca
+una flecha de la espalda y tensa el arco, da puñetazos con las manos vacías, acércate la comida
+a la boca para comer. Los mandos de Quest son además un mando completo para todo lo demás, y hay
+cuatro modos de combate, desde los mandos de movimiento completos hasta el juego de siempre con
+los mandos haciendo de mando de Xbox.
+
+Desde la 1.6: el [modo diorama](#modo-diorama). Con una tecla el nivel entero se convierte en
+una maqueta sobre una mesa virtual en la que sigues jugando.
 
 > **Aviso.** Este mod ha sido elaborado íntegramente con ayuda de inteligencia
 > artificial, dirigido, supervisado y probado por su autor a lo largo de muchas
@@ -31,15 +36,22 @@ dentro.
 * **Seguimiento de cabeza 6DOF.** La cámara sigue la rotación *y* la posición del visor,
   anclada a la cámara del propio juego, tanto en primera como en tercera persona. No se puede
   asomar la cabeza a través de paredes u objetos: se usa la colisión del propio motor.
-* **Modo "camino hacia donde miro".** Opcional: el personaje gira para seguir al visor, de
-  modo que caminas en la dirección en la que miras. El giro le llega solo al juego, así que
-  el cursor del ratón de Windows no se mueve.
+* **Combate con mandos de movimiento.** En primera persona los brazos del personaje siguen a
+  tus manos y su cuerpo se queda bajo el visor. Las armas golpean donde de verdad tocan (la
+  detección de golpes del propio motor, con chispas, sangre y cortes), al mismo ritmo y con el
+  mismo gasto de resistencia que el ataque básico del juego. El escudo, las armas a dos manos,
+  el arco, los puñetazos, lanzar, sacar y guardar las armas, la comida y las pociones
+  funcionan con gestos.
+* **Los mandos de Quest como mando del juego.** Le llegan al juego como un mando de Xbox más,
+  así que los menús, los combos, el inventario y todo lo demás funcionan como con un mando de
+  verdad. Se pueden usar a la vez un mando de verdad y el teclado.
+* **Modo "camino hacia donde miro".** El personaje gira para seguir al visor, de modo que
+  caminas en la dirección en la que miras (activo de serie con los mandos de movimiento). El
+  giro le llega solo al juego, así que el cursor del ratón de Windows no se mueve.
 * En el monitor se ve el ojo izquierdo centrado (con bandas negras a los lados) en vez
   de la imagen partida; también se puede usar la ventana "Vista de RV" de SteamVR.
 * **Modo diorama.** El nivel entero como maqueta sobre una mesa, con cortes, cono de
   visión, tres modos de maqueta, cinemáticas y fondo para realidad mixta (ver más abajo).
-* Se juega con **teclado y ratón o con mando**, exactamente igual que el juego original.
-  Los mandos de movimiento de VR solo se usan en el modo diorama.
 * Funciona desde el menú principal; no hace falta ningún inyector ni lanzador.
 
 ## Requisitos
@@ -47,20 +59,29 @@ dentro.
 * Blade of Darkness (remaster de 2021, Steam, 64 bits).
 * SteamVR y un visor compatible (probado con Quest 2 por Link / Air Link y Virtual Desktop).
 * Windows 10/11 x64.
-* Modo diorama con mando: Steam Input (lo que usa el juego por defecto). Realidad mixta:
-  Virtual Desktop (opcional).
+* Mandos de movimiento: los de Quest (Touch) por SteamVR. Le llegan al juego por Steam Input,
+  que es lo que usa el juego de serie: déjalo activado.
+* Modo diorama con mando: Steam Input. Realidad mixta: Virtual Desktop (opcional).
 
 ## Instalación
 
-Copiar estos tres ficheros a la carpeta `bin\bin` del juego (la que contiene `Blade.exe`,
+Copia estos tres ficheros en la carpeta `bin\bin` del juego (la que contiene `Blade.exe`,
 normalmente `...\steamapps\common\Blade of Darkness\bin\bin`):
 
 * `dxgi.dll` — proxy que carga el mod
 * `BladeVR.dll` — el mod
 * `openvr_api.dll` — runtime de OpenVR (se busca junto a `BladeVR.dll`)
 
-Arrancar primero SteamVR y después el juego. Si SteamVR no está en marcha o no hay visor,
-el juego funciona con normalidad, sin VR. Para desinstalar, borrar los tres ficheros.
+Arranca primero SteamVR y después el juego. Si SteamVR no está en marcha o no hay visor,
+el juego funciona con normalidad, sin VR. Para actualizar, basta con sobrescribir los tres
+ficheros.
+
+En esa misma carpeta el mod crea la carpeta `BladeVR_bindings` (los enlaces de los mandos que
+le da a SteamVR) y, la primera vez que cambias un ajuste, `BladeVR.ini`: el último modo de
+combate, la calibración, la resistencia sí o no, la altura de los ojos y si saliste del juego
+en el modo diorama (entonces la siguiente partida empieza en él). Para desinstalar, borra los
+tres ficheros, `BladeVR_bindings` y `BladeVR.ini` (y `BladeVR_logs` y `BladeVR_debug.txt` si
+sacaste un log de depuración).
 
 Si al arrancar el juego se abre solo el panel de SteamVR, abre las *Propiedades* del juego en
 Steam y desactiva *Use Desktop Game Theatre while SteamVR is active* (usar el teatro de juegos
@@ -93,18 +114,102 @@ de escritorio con SteamVR).
 | Tecla | Función |
 |---|---|
 | **Re Pág / Av Pág** | Separación entre ojos +4 / −4 unidades del juego (por defecto 58). Ajústala hasta que el mundo tenga el tamaño correcto. |
+| **Ctrl + Re Pág / Av Pág** | Ojos más adelantados / más atrás en la cabeza del personaje, 1 cm cada vez (de serie 10 cm). |
+| **Mayús + Re Pág / Av Pág** | Solo en el modo de manos flotantes: ojos más altos / más bajos, 5 cm cada vez (de serie 0; se guarda). |
 | **Fin** | Tamaño de la pantalla virtual de menús y HUD (53° / 75° / 90°). |
 | **Insert** | Seguimiento de cabeza activo (por defecto) / apagado. Al activarlo se recentra la vista. |
 | **Inicio** | Recentra la posición: la cámara vuelve a los ojos del personaje. |
-| **Supr** | Alterna entre *vista libre* (el personaje no gira con la cabeza) y *camino hacia donde miro* (el personaje gira siguiendo al visor). |
+| **Supr** | Alterna entre *vista libre* (el personaje no gira con la cabeza) y *camino hacia donde miro* (el personaje gira siguiendo al visor). Empieza en *camino hacia donde miro* en los modos con mandos de movimiento y en *vista libre* en el modo 0. |
+| **Mayús + F8** | Los golpes con los mandos gastan la resistencia (de serie) / no la gastan. Se guarda. |
+| **Ctrl + F8** | Calibrar el agarre y el largo de los brazos (opcional, ver más abajo). |
 | **F5** | Modo diorama sí / no (ver más abajo). |
+
+## Mandos de movimiento en el juego
+
+### Modos de combate
+
+| Modo | Qué hace |
+|---|---|
+| **1 · Mandos de movimiento** (de serie) | Los brazos del personaje siguen a los tuyos. Se ataca moviendo el arma; A no ataca. |
+| **3 · Manos flotantes** | Como el 1, pero sin el cuerpo: solo los antebrazos, las manos y las armas, que siguen a los mandos sin límite del largo del brazo. Los ojos se pueden subir (Mayús + Re Pág / Av Pág). |
+| **2 · Mandos + combos** | A y las direcciones del stick hacen los combos del juego (los brazos siguen la animación del combo), y mover el arma hace el ataque básico. |
+| **0 · VR básico** | Sin mandos de movimiento: los mandos de Quest son un mando de Xbox y se juega exactamente igual que en plano. *Vista libre* de serie. |
+
+**Pulgar derecho en el reposapulgares + clic del stick izquierdo mantenido 1 segundo** pasa al
+siguiente modo, en este orden: 1 → 3 → 2 → 0 → 1. Un aviso en el visor muestra el modo nuevo, y
+se recuerda el último que elegiste. Al pasar a un modo con mandos de movimiento la vista se
+pone en primera persona; al pasar al modo 0, la vista se recentra como al pulsar Insert dos
+veces.
+
+### Qué hacen tus manos (modos 1, 3 y 2)
+
+* **Atacar**: un movimiento rápido con el arma. Golpea donde el filo toca de verdad, con
+  chispas contra las paredes. Recoger el brazo hacia el cuerpo no golpea.
+* **Puñetazo**: con las manos vacías, el mismo movimiento rápido con el puño.
+* **Bloquear**: alza el escudo delante de ti, a la altura de los hombros o más arriba, con el
+  dorso de la mano izquierda hacia delante. Con un arma a dos manos, cógela con las dos manos
+  y álzala.
+* **Armas a dos manos**: lleva la mano izquierda al mango y mantén el agarre izquierdo para
+  coger el arma también con la izquierda; suéltalo para soltarla.
+* **Sacar y guardar las armas**: lleva la mano por encima del hombro, detrás de la cabeza, y
+  aprieta el agarre de esa mano.
+* **Lanzar** (modos 1 y 3): mantén el agarre derecho medio segundo y baja deprisa el brazo
+  derecho desde la altura de la cabeza. En el modo 2, como en el juego: agarre derecho
+  mantenido + A.
+* **Arco** (modos 1 y 3, con el arco en la izquierda): saca una flecha de la espalda con el
+  agarre derecho, aprieta el gatillo derecho con la mano derecha junto al arco para coger la
+  cuerda, separa las manos para tensar y suelta el gatillo para disparar. El agarre izquierdo
+  en la espalda guarda el arco.
+* **Fijar a un enemigo** con el gatillo derecho. Con la mano derecha vacía lo fija sin sacar
+  las armas. **Y** suelta al enemigo.
+* **La comida y las pociones** se quedan en la mano: acércatelas a la boca para comer o beber.
+* La vibración del juego llega a los mandos.
+
+### Botones de los mandos de Quest
+
+| Control | Modos 1, 3 y 2 | Modo 0 (mando de Xbox) |
+|---|---|---|
+| **Stick izquierdo** | Andar (nunca corre solo). Con un enemigo fijado, se mueve respecto al enemigo, como en el juego. | Andar; a fondo, correr. |
+| **Clic del stick izquierdo** | Sprint, en la dirección del stick, hasta soltarlo o volver a hacer clic. | L3 (cambia la capa de la maqueta del mando, como en un mando de Xbox). |
+| **Stick derecho** | Cámara. | Cámara. |
+| **Clic del stick derecho** | Recentrar la vista. | R3. |
+| **A** | Modo 2 y menús: A. Modos 1 y 3: A no ataca mientras tus brazos mueven los del personaje (se ataca con el arma). | A (atacar). |
+| **B** | Saltar, solo con el stick izquierdo hacia delante o atrás (con un enemigo fijado, hacia cualquier lado: esquivas). Con el stick en reposo o hacia un lado, seleccionar los objetos cercanos. | B. |
+| **X** | Usar. | X (usar). |
+| **Y** | Soltar al enemigo fijado. | Y (darse la vuelta). |
+| **Agarre izquierdo** | Sujetar un arma a dos manos con la izquierda. | LB (bloquear). |
+| **Agarre derecho** | RB (lanzar). | RB (lanzar). |
+| **Gatillo izquierdo / derecho** | LT / RT (RT fija al enemigo). | LT / RT. |
+
+En los menús, A, B, Y y el agarre izquierdo son los de un mando. Con el **pulgar izquierdo en
+el reposapulgares** (en todos los modos): el stick derecho es la cruceta (la cámara se queda
+quieta), A es Start y B es Back. **Pulgar izquierdo en el
+reposapulgares + clic del stick derecho** recentra la vista (en el modo 0 es la forma de
+recentrar); mantenido 1 segundo, entra en el modo diorama.
+
+### Ajustes
+
+* **La calibración (Ctrl + F8)** es opcional: el agarre de serie vale para casi todo el mundo.
+  Úsala solo si los brazos se notan largos o cortos. Al pulsarla se recentra la vista y empieza
+  una cuenta atrás de 5 segundos (una vibración por segundo); antes de que acabe, ponte con los
+  dos brazos estirados al frente, los pulgares arriba y mirando al frente: mide en ese momento.
+  Se guarda; para volver al agarre de serie, borra las líneas `agarre_*` y `alcance_*` de
+  `BladeVR.ini`.
+* **Resistencia (Mayús + F8)**: los golpes y puñetazos con los mandos gastan la resistencia
+  como el ataque básico del juego; con poca sale un ataque torpe, sin ella no sale nada.
+* Un mando de verdad y el teclado y el ratón funcionan a la vez que los mandos de Quest: cuenta
+  el que estés usando.
+* Al cargar un nivel la vista se pone en primera persona. Los brazos siguen a los mandos solo
+  en primera persona.
 
 ## Modo diorama
 
-Pulsa **F5** (o **R3** con el mando en la capa de la maqueta). El nivel entero aparece como una
-maqueta sobre una mesa virtual 45 cm delante de ti, algo por debajo de los ojos, con tu
-personaje en el centro, y sigues jugando en ella. Mírala desde cualquier lado, acércate,
-rodéala. Pulsa F5 otra vez para volver a la vista VR normal.
+Pulsa **F5**, o con los mandos de Quest **pulgar izquierdo en el reposapulgares + clic del stick
+derecho mantenido 1 segundo** (o **R3** con un mando en la capa de la maqueta). El nivel entero
+aparece como una maqueta sobre una mesa virtual 45 cm delante de ti, algo por debajo de los
+ojos, con tu personaje en el centro, y sigues jugando en ella. Mírala desde cualquier lado,
+acércate, rodéala. Pulsa F5 otra vez (con los Quest: pulgar izquierdo en el reposapulgares +
+clic del stick derecho) para volver a la vista VR normal.
 
 * **El mapa entero** a la vez (1:10 al empezar, de 1:1 a 1:500): todas las salas, las paredes
   por los dos lados, los techos también, sin niebla. En la maqueta funcionan los reflejos del
@@ -120,16 +225,21 @@ rodéala. Pulsa F5 otra vez para volver a la vista VR normal.
   * **Corte vertical**: quita todo lo que queda entre tú y un plano vertical delante del
     personaje, en el lado que miras. Va recto, por las paredes del mapa, y se queda en su lado
     aunque gires la maqueta. En el modo *por la espalda* gira con la maqueta, así que siempre
-    la ves cortada de frente; mantén **A** en el mando para cambiar a un corte recto que pasa
-    con suavidad al lado nuevo del mapa cuando la maqueta gira más de la mitad.
+    la ves cortada de frente; mantén **A** para cambiar a un corte recto que pasa con suavidad
+    al lado nuevo del mapa cuando la maqueta gira más de la mitad.
   * **Área visible**: solo se dibuja un cuadrado del mapa alrededor del personaje.
   * **Cono de visión**: un agujero redondo entre tus ojos y el personaje que quita paredes,
     techos y pisos de arriba que tapan (apagado al empezar, tres anchos).
   * **Personajes**: siempre a la vista (por defecto) o cortados como el resto.
-* **Moverse respecto a la vista** (Supr lo cambia; activo por defecto): con el mando en el
-  juego, el stick izquierdo hacia delante lleva al personaje hacia donde miras sobre la
-  maqueta. El combate y los combos funcionan como siempre. En el modo *por la espalda* se usa
-  el control del propio juego.
+* **Moverse respecto a la vista** (Supr lo cambia; activo por defecto): el stick izquierdo
+  hacia delante lleva al personaje hacia donde miras sobre la maqueta. El combate y los combos
+  funcionan como siempre. En el modo *por la espalda* se usa el control del propio juego.
+* **Jugar en la maqueta con los mandos de Quest**: pulgar derecho en el reposapulgares + clic
+  del stick izquierdo mantenido 1 segundo, y los mandos manejan al personaje como un mando de
+  Xbox, sin gestos, en cualquier modo de combate: stick izquierdo andar (clic: sprint), A
+  ataca, B salta o selecciona, X usa, Y da la vuelta, el agarre izquierdo bloquea y el derecho
+  lanza; el clic del stick derecho recoloca la maqueta. Lo mismo otra vez los devuelve a la
+  maqueta.
 * **Cinemáticas**: la vista sigue la cámara del juego. Solo funcionan el zoom, el cono, los
   cortes, el área y el fondo, y el zoom agranda o encoge el mundo como una maqueta. Recentrar
   (Inicio o X) vuelve a la cámara de la cinemática conservando el tamaño. Al acabar, la
@@ -141,7 +251,7 @@ rodéala. Pulsa F5 otra vez para volver a la vista VR normal.
 | Tecla | Función |
 |---|---|
 | **F5** | Diorama sí / no. |
-| **Inicio** | Pone la maqueta delante, centrada en el personaje, a 1:15 para encontrarle rápido (en una cinemática: vuelve a su cámara). |
+| **Inicio** | Pone la maqueta delante, centrada en el personaje, a 1:15 para encontrarlo rápido (en una cinemática: vuelve a su cámara). |
 | **Re Pág / Av Pág** | Zoom: maqueta más grande / más pequeña. |
 | **F4** | Cono de visión: apagado → pequeño → mediano → grande. |
 | **F6** | Área visible: mapa entero → 60 → 30 → 15 m. |
@@ -153,7 +263,8 @@ rodéala. Pulsa F5 otra vez para volver a la vista VR normal.
 
 **L3** pasa todo el mando del juego a la maqueta y al revés, también fuera del modo diorama.
 Mientras el mando controla la maqueta, el juego solo recibe Start y Back y el personaje se
-queda quieto; pulsa L3 otra vez para jugar.
+queda quieto; pulsa L3 otra vez para jugar. En el modo de combate 0, el clic del stick
+izquierdo de los mandos de Quest es este L3.
 
 | Botón | Función |
 |---|---|
@@ -174,17 +285,18 @@ queda quieto; pulsa L3 otra vez para jugar.
 
 | Control | Función |
 |---|---|
-| **Un grip** | La maqueta sigue a la mano: moverla, subirla, bajarla. |
-| **Los dos grips** | Separa o junta las manos para escalar; gira la recta entre las manos para girar la maqueta. |
+| **Un agarre** | La maqueta sigue a la mano: moverla, subirla, bajarla. |
+| **Los dos agarres** | Separa o junta las manos para escalar; gira la recta entre las manos para girar la maqueta. |
 | **Un gatillo** | Sube o baja la mano: corte de altura. Acércala o aléjala de la maqueta: corte vertical. La primera dirección en que la muevas decide cuál. |
 | **Los dos gatillos** | Separa o junta las manos: tamaño del área visible. |
 | **Clic del stick izquierdo** | Modo de la maqueta. Mantenido: cono apagado → pequeño → mediano → grande. |
 | **Clic del stick derecho** | Área visible. Mantenido: personajes en los cortes. |
 | **Stick izquierdo** | Desplazar la mesa a los lados y adelante / atrás. |
 | **Stick derecho** | A los lados: girar la maqueta. Arriba / abajo: zoom. |
+| **A (derecho)** | Corte vertical 1,5 m delante del personaje sí / no. Mantenido: corte que gira con la maqueta ↔ recto (modo *por la espalda*). |
+| **B (derecho)** | Corte de altura 1,5 m sobre el personaje sí / no. |
 | **X (izquierdo)** | Pone la maqueta delante a 1:15. |
 | **Y (izquierdo)** | Fondo de passthrough sí / no. |
-| **B / A (derecho)** | Subir / bajar la mesa. |
 
 ### Realidad mixta con Virtual Desktop
 
@@ -232,7 +344,19 @@ pose usada para dibujar se adjunta al `Submit` (`Submit_TextureWithPose`) para q
 compositor reproyecte correctamente. En el modo *camino hacia donde miro* el personaje se
 gira con movimiento de ratón que solo ve el juego: un mensaje de entrada *raw input* enviado a
 su ventana, cuyo contenido entrega `GetRawInputData`, enganchada en la tabla de importaciones
-del juego.
+del juego. Parado, se le gira poniendo directamente su ángulo, para que no dé pasos.
+
+**Mandos de movimiento** (`VrInput.cpp`, `VrPadHook.cpp`, `CombatVRHook.cpp`, `CombatVRIk.h`).
+Los mandos se leen con la entrada por acciones de SteamVR (el mod escribe su propio manifiesto
+de acciones y los enlaces por defecto, que dan también los reposapulgares). El juego lee los
+mandos por Steam Input; se cambian siete entradas de esa interfaz para que el juego vea un mando
+de Xbox más, alimentado por los mandos de Quest, y lo trate exactamente como a uno de verdad.
+Los brazos se colocan con cinemática inversa después de que el motor evalúe el esqueleto en
+cada fotograma, con lo que lleve la mano enganchado a ella. Los tajos se miden con el mando
+real y encienden la detección de golpes de la propia arma mientras va deprisa, así que es el
+propio motor el que decide dónde golpea; el gasto de resistencia sale de la fórmula del juego.
+El bloqueo con el escudo o con un arma a dos manos pasa por la prueba de bloqueo del motor, y
+la comida, las pociones y el arco usan los scripts de Python del propio juego.
 
 **Modo diorama** (`DioramaHook.cpp`, `DioramaGpuLevel.cpp`). La cámara que escribe el juego se
 sustituye por la pose de la cabeza llevada a la mesa (ancla + giro · (cabeza − mesa) ·
@@ -247,9 +371,9 @@ dibuja la GPU con la iluminación del propio motor; las puertas, los muros que s
 los líquidos que corren, que cambian durante la partida, los sigue dibujando el motor. Los
 cortes y el cono se aplican por píxel.
 
-**Direcciones del juego.** Los offsets de `Blade.exe` (constantes `k...` al principio de
-`HeadTrackHook.cpp`, `SceneCullingRootHook.cpp` y `FromWorldLocator.cpp`) corresponden a la
-versión de Steam del remaster; si el juego se actualiza habrá que revisarlos.
+**Direcciones del juego.** Los offsets de `Blade.exe` (constantes `k...` al principio de los
+ficheros de enganches) corresponden a la versión de Steam del remaster; si el juego se
+actualiza habrá que revisarlos.
 
 ## Compilar
 
@@ -264,17 +388,17 @@ cmake -B build -A x64
 cmake --build build --config Release
 ```
 
-Después, copiar los tres ficheros de `output\Release\` (`dxgi.dll`, `BladeVR.dll` y
+Después, copia los tres ficheros de `output\Release\` (`dxgi.dll`, `BladeVR.dll` y
 `openvr_api.dll`) junto al ejecutable del juego, en `Blade of Darkness\bin\bin\`.
 
 ## Log de depuración
 
-El mod no escribe ningún fichero por defecto. Para obtener un log, crea un fichero vacío
-llamado `BladeVR_debug.txt` junto a `Blade.exe`; el mod escribirá entonces
+El mod no escribe ningún log por defecto. Para obtenerlo, crea un fichero vacío llamado
+`BladeVR_debug.txt` junto a `Blade.exe`; el mod escribirá entonces
 `bin\bin\BladeVR_logs\BladeVR_<pid>_<fecha>.log` en cada ejecución: los módulos que instala,
-el enlace con SteamVR, los frustums de cada ojo y un breve resumen cada minuto (fotogramas
-por segundo, peor fotograma, si el mundo se está dibujando por ojo). Adjúntalo al informar
-de un problema.
+el enlace con SteamVR, los mandos, los frustums de cada ojo, los cambios de modo de combate y
+un breve resumen cada minuto (fotogramas por segundo, peor fotograma, si el mundo se está
+dibujando por ojo, lo que se hizo con los mandos). Adjúntalo al informar de un problema.
 
 ## Estructura
 
@@ -285,7 +409,12 @@ hookdll/                 BladeVR.dll
   ProjectionHook.*       captura de la matriz de proyección (VS slot 0)
   StereoHook.*           estéreo lado a lado, pantalla plana, interfaz anclada, teclas
   FovHook.*              campo de visión mínimo (selección de personaje, cinemáticas)
-  OpenVRHook.*           SteamVR: init, poses, frustums, Submit
+  OpenVRHook.*           SteamVR: init, poses, frustums, Submit, avisos en el visor
+  VrInput.*              mandos de movimiento por las acciones de SteamVR (manifiesto, enlaces)
+  VrPadHook.*            los mandos de Quest como mando de Steam Input, gestos
+  CombatVRHook.*         combate con mandos: brazos, tajos, escudo, arco, comida, modos
+  CombatVRIk.h           cinemática inversa de los brazos
+  BladeVRIni.*           BladeVR.ini (los ajustes que se recuerdan)
   HeadTrackHook.*        seguimiento de cabeza 6DOF y colisión
   SceneCullingRootHook.* mundo dibujado una vez desde cada ojo; culling sincronizado
   DioramaHook.*          modo diorama: cámara de la maqueta, cortes, cono, controles, cinemáticas
@@ -309,14 +438,27 @@ ThirdParty/openvr/       openvr.h, openvr_api.lib, openvr_api.dll (OpenVR SDK)
 * El espejo del monitor no muestra las pantallas ancladas delante de ti (la lista de combos
   de F1 y la ficha de personaje): esas van directas al overlay de SteamVR y no pasan por la
   imagen del juego.
-* Los mandos de movimiento de VR solo se usan en el modo diorama: en la vista normal se juega
-  con teclado y ratón o con un mando, igual que en plano.
+* En los modos de combate 1, 3 y 2 hay tres acciones del juego sin botón: bloquear con un arma
+  de una mano sin escudo, lanzar lo que llevas en la mano izquierda (salvo alzando el escudo)
+  y saltar en el sitio. Para ellas, usa el modo 0, un mando o el teclado.
+* Los brazos siguen a los mandos solo en primera persona; en tercera persona se ven las
+  animaciones del juego.
 * Modo diorama: los efectos muy pequeños (las ondas de las pisadas en el agua) pueden quedar
   por debajo de un píxel con la maqueta pequeña, y los efectos de partículas (como las
   cascadas) no se reflejan en el agua de la maqueta.
 
 ## Historial de versiones
 
+* **2.0** — Combate con mandos de movimiento: brazos que siguen a tus manos, ataques con la
+  detección de golpes de la propia arma y el ritmo y el gasto de resistencia del juego, bloqueo
+  con el escudo y con armas a dos manos, arco VR con flechas sacadas de la espalda, puñetazos,
+  lanzar, sacar y guardar las armas con un gesto, la comida y las pociones a la boca. Los
+  mandos de Quest como mando completo, que se puede usar a la vez que un mando de verdad y el
+  teclado. Cuatro modos de combate (mandos de movimiento, manos flotantes, mandos con los
+  combos del juego, VR básico), que se recuerdan en `BladeVR.ini`. *Camino hacia donde miro*
+  activo de serie y sin dar pasos al girar parado. Modo diorama: se entra y se sale con los
+  mandos de Quest, se juega en la maqueta con ellos, y A / B hacen ahora los cortes vertical y
+  de altura.
 * **1.6** — Modo diorama: el nivel entero como maqueta sobre una mesa, con cortes de altura y
   vertical, área visible, cono de visión, tres modos de maqueta, movimiento respecto a la
   vista, cinemáticas, fondo de realidad mixta para Virtual Desktop, mandos de movimiento y

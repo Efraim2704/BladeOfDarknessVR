@@ -7,6 +7,7 @@
 #include "FovHook.h"
 #include "DioramaHook.h"
 #include "DioramaGpuLevel.h"
+#include "CombatVRHook.h"
 #include <windows.h>
 #include <d3d11.h>
 #include <dxgi1_2.h>
@@ -407,6 +408,7 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* pSwapChain, UINT 
     SubmitFrameToVR();
     StereoPollKeys();
     HeadTrackOnPresent();
+    CombatVROnPresent();   // F8 / Ctrl+F8 y avisos del combate con los mandos
 
     return g_originalPresent(pSwapChain, SyncInterval, Flags);
 }
